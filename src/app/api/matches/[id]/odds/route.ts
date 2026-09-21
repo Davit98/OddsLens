@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import { getCredits, getMatch, getOddsSeries } from "@/lib/db";
+import { getCredits, getMatch, getMatchEspn, getOddsSeries } from "@/lib/db";
 import { estimateCredits, ingestMatchOdds } from "@/lib/ingest";
 import { MARKETS, type MarketKey } from "@/lib/leagues";
 import { ensureMatchDetails } from "@/lib/match-details";
 import { OddsApiError } from "@/lib/odds-api";
-import type { CreditEstimate } from "@/lib/types";
+import type { CreditEstimate, HalfEnds } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -31,16 +31,22 @@ function seriesFor(id: string, bookmaker: string, commenceTime: string) {
   );
 }
 
-function marketEstimates(eventId: string, bookmaker: string): Record<MarketKey, CreditEstimate> {
+function marketEstimates(
+  eventId: string,
+  bookmaker: string,
+  halfEnds?: HalfEnds | null,
+): Record<MarketKey, CreditEstimate> {
   return {
     [MARKETS.h1]: estimateCredits({
       eventId,
       bookmaker,
+      halfEnds,
       markets: [MARKETS.h1],
     }),
     [MARKETS.h2]: estimateCredits({
       eventId,
       bookmaker,
+      halfEnds,
       markets: [MARKETS.h2],
     }),
   };
@@ -59,7 +65,7 @@ export async function GET(
   const { searchParams } = new URL(request.url);
   const bookmaker = searchParams.get("bookmaker") ?? "pinnacle";
   const markets = parseMarkets(searchParams.get("markets"));
-  const goals = await ensureMatchDetails(match);
+  const { goals, halfEnds } = await ensureMatchDetails(match);
   const fresh = getMatch(id) ?? match;
 
   return NextResponse.json({
@@ -67,9 +73,15 @@ export async function GET(
     bookmaker,
     markets,
     series: seriesFor(id, bookmaker, fresh.commenceTime),
-    estimate: estimateCredits({ eventId: id, bookmaker, markets }),
-    estimates: marketEstimates(id, bookmaker),
+    estimate: estimateCredits({
+      eventId: id,
+      bookmaker,
+      markets,
+      halfEnds,
+    }),
+    estimates: marketEstimates(id, bookmaker, halfEnds),
     goals,
+    halfEnds,
     credits: getCredits(),
   });
 }
@@ -92,21 +104,30 @@ export async function POST(
   const markets = parseMarkets(body.markets?.join(",") ?? null);
 
   try {
+    const details = await ensureMatchDetails(match);
     const result = await ingestMatchOdds({
       eventId: match.id,
       sportKey: match.sportKey,
       commenceTime: match.commenceTime,
       bookmaker,
       markets,
+      halfEnds: details.halfEnds,
     });
-    const goals = await ensureMatchDetails(match);
+    const halfEnds = getMatchEspn(id)?.halfEnds ?? details.halfEnds;
+    const goals = details.goals;
     return NextResponse.json({
       result,
       series: seriesFor(id, bookmaker, match.commenceTime),
       match: getMatch(id),
-      estimate: estimateCredits({ eventId: id, bookmaker, markets }),
-      estimates: marketEstimates(id, bookmaker),
+      estimate: estimateCredits({
+        eventId: id,
+        bookmaker,
+        markets,
+        halfEnds,
+      }),
+      estimates: marketEstimates(id, bookmaker, halfEnds),
       goals,
+      halfEnds,
     });
   } catch (error) {
     if (error instanceof OddsApiError) {

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
-import type { Credits, GoalEvent, MatchRecord, OddsPoint, SnapshotRow } from "./types";
+import type { Credits, GoalEvent, HalfEnds, MatchRecord, OddsPoint, SnapshotRow } from "./types";
 
 const DB_PATH = path.join(process.cwd(), "data", "oddslens.db");
 
@@ -136,7 +136,21 @@ export function getDb(): Database.Database {
       PRIMARY KEY (sport_key, day)
     );
   `);
+  ensureColumn(g.__oddslensDb, "match_espn", "h1_end_minute", "REAL");
+  ensureColumn(g.__oddslensDb, "match_espn", "h2_end_minute", "REAL");
   return g.__oddslensDb;
+}
+
+function ensureColumn(
+  db: Database.Database,
+  table: string,
+  column: string,
+  definition: string,
+): void {
+  const cols = db.pragma(`table_info(${table})`) as Array<{ name: string }>;
+  if (!cols.some((col) => col.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
 }
 
 export function getMeta(key: string): string | null {
@@ -324,19 +338,31 @@ export function getMatchEspn(eventId: string): {
   espnEventId: string;
   espnLeague: string;
   goalsFetched: boolean;
+  halfEnds: HalfEnds;
 } | null {
   const row = getDb()
     .prepare(
-      "SELECT espn_event_id, espn_league, goals_fetched FROM match_espn WHERE event_id = ?",
+      `SELECT espn_event_id, espn_league, goals_fetched, h1_end_minute, h2_end_minute
+       FROM match_espn WHERE event_id = ?`,
     )
     .get(eventId) as
-    | { espn_event_id: string; espn_league: string; goals_fetched: number }
+    | {
+        espn_event_id: string;
+        espn_league: string;
+        goals_fetched: number;
+        h1_end_minute: number | null;
+        h2_end_minute: number | null;
+      }
     | undefined;
   if (!row) return null;
   return {
     espnEventId: row.espn_event_id,
     espnLeague: row.espn_league,
     goalsFetched: Boolean(row.goals_fetched),
+    halfEnds: {
+      h1EndMinute: row.h1_end_minute,
+      h2EndMinute: row.h2_end_minute,
+    },
   };
 }
 
@@ -345,21 +371,28 @@ export function setMatchEspn(input: {
   espnEventId: string;
   espnLeague: string;
   goalsFetched?: boolean;
+  halfEnds?: HalfEnds;
 }): void {
   getDb()
     .prepare(
-      `INSERT INTO match_espn (event_id, espn_event_id, espn_league, goals_fetched)
-       VALUES (?, ?, ?, ?)
+      `INSERT INTO match_espn (
+         event_id, espn_event_id, espn_league, goals_fetched, h1_end_minute, h2_end_minute
+       )
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(event_id) DO UPDATE SET
          espn_event_id = excluded.espn_event_id,
          espn_league = excluded.espn_league,
-         goals_fetched = MAX(match_espn.goals_fetched, excluded.goals_fetched)`,
+         goals_fetched = MAX(match_espn.goals_fetched, excluded.goals_fetched),
+         h1_end_minute = COALESCE(excluded.h1_end_minute, match_espn.h1_end_minute),
+         h2_end_minute = COALESCE(excluded.h2_end_minute, match_espn.h2_end_minute)`,
     )
     .run(
       input.eventId,
       input.espnEventId,
       input.espnLeague,
       input.goalsFetched ? 1 : 0,
+      input.halfEnds?.h1EndMinute ?? null,
+      input.halfEnds?.h2EndMinute ?? null,
     );
 }
 

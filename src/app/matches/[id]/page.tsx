@@ -13,6 +13,12 @@ export default async function MatchPage({
   const { id } = await params;
   const match = getMatch(id);
   if (!match) notFound();
-  const goals = await ensureMatchDetails(match);
-  return <MatchExplorer match={getMatch(id) ?? match} initialGoals={goals} />;
+  const { goals, halfEnds } = await ensureMatchDetails(match);
+  return (
+    <MatchExplorer
+      match={getMatch(id) ?? match}
+      initialGoals={goals}
+      initialHalfEnds={halfEnds}
+    />
+  );
 }

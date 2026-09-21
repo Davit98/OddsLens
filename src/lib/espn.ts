@@ -1,5 +1,5 @@
-import { ESPN_LEAGUES, H1_WINDOW_MINUTES } from "./leagues";
-import type { GoalEvent, MatchRecord } from "./types";
+import { ESPN_LEAGUES, H1_WINDOW_MINUTES, MATCH_WINDOW_MINUTES } from "./leagues";
+import type { GoalEvent, HalfEnds, MatchRecord } from "./types";
 
 const ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer";
 const TIMEOUT_MS = 8000;
@@ -244,6 +244,53 @@ function elapsedMinutesOf(
   return H1_WINDOW_MINUTES + Math.max(0, (seconds - 45 * 60) / 60);
 }
 
+export function parseEspnClockMinute(display?: string | null): number | null {
+  if (!display) return null;
+  const text = display.replace(/[’′]/g, "'").trim();
+  const added = text.match(/^(\d+)\s*'?\s*\+\s*(\d+)\s*'?$/);
+  if (added) return Number(added[1]) + Number(added[2]);
+  const plain = text.match(/^(\d+)\s*'?$/);
+  if (plain) return Number(plain[1]);
+  return null;
+}
+
+function halfEndsFromEspn(
+  keyEvents: EspnKeyEvent[],
+  commentary: Array<{ time?: { displayValue?: string }; text?: string }>,
+): HalfEnds {
+  let h1EndMinute: number | null = null;
+  let h2EndMinute: number | null = null;
+
+  for (const event of keyEvents) {
+    const kind = event.type?.type ?? event.type?.text?.toLowerCase();
+    const minute = parseEspnClockMinute(event.clock?.displayValue);
+    if (kind === "halftime" || kind === "end-1st-half") {
+      h1EndMinute = minute;
+    }
+    if (kind === "end-regular-time" || kind === "end-2nd-half") {
+      h2EndMinute = minute;
+    }
+  }
+
+  for (const item of commentary) {
+    const text = item.text ?? "";
+    const minute = parseEspnClockMinute(item.time?.displayValue);
+    if (h1EndMinute == null && /first half ends/i.test(text)) h1EndMinute = minute;
+    if (h2EndMinute == null && /second half ends/i.test(text)) h2EndMinute = minute;
+  }
+
+  return {
+    h1EndMinute:
+      h1EndMinute != null && Number.isFinite(h1EndMinute)
+        ? Math.max(H1_WINDOW_MINUTES, h1EndMinute)
+        : H1_WINDOW_MINUTES,
+    h2EndMinute:
+      h2EndMinute != null && Number.isFinite(h2EndMinute)
+        ? Math.max(MATCH_WINDOW_MINUTES, h2EndMinute)
+        : MATCH_WINDOW_MINUTES,
+  };
+}
+
 export async function fetchEspnGoals(
   espnLeagueKey: string,
   espnEventId: string,
@@ -253,6 +300,7 @@ export async function fetchEspnGoals(
   awayScore: number | null;
   completed: boolean;
   goals: GoalEvent[];
+  halfEnds: HalfEnds;
 }> {
   const payload = await espnGet<{
     header?: {
@@ -265,6 +313,7 @@ export async function fetchEspnGoals(
       }>;
     };
     keyEvents?: EspnKeyEvent[];
+    commentary?: Array<{ time?: { displayValue?: string }; text?: string }>;
   }>(`/${espnLeagueKey}/summary`, { event: espnEventId });
 
   const competition = payload.header?.competitions?.[0];
@@ -316,5 +365,6 @@ export async function fetchEspnGoals(
     awayScore: Number.isFinite(awayScore as number) ? awayScore : runningAway,
     completed: Boolean(competition?.status?.type?.completed),
     goals,
+    halfEnds: halfEndsFromEspn(payload.keyEvents ?? [], payload.commentary ?? []),
   };
 }

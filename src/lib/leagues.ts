@@ -72,23 +72,76 @@ export const H1_WINDOW_MINUTES = HALF_LENGTH_MINUTES;
 export const MATCH_WINDOW_MINUTES = HALF_LENGTH_MINUTES * 2;
 export const CREDIT_PER_MARKET = 10;
 
-export function snapshotMinutesForMarket(market: MarketKey): number[] {
+export function nominalHalfEnd(market: MarketKey): number {
+  return market === MARKETS.h1 ? H1_WINDOW_MINUTES : MATCH_WINDOW_MINUTES;
+}
+
+export function resolvedHalfEnd(
+  market: MarketKey,
+  halfEndMinute?: number | null,
+): number {
+  const nominal = nominalHalfEnd(market);
+  if (halfEndMinute == null || !Number.isFinite(halfEndMinute)) return nominal;
+  return Math.max(nominal, Math.round(halfEndMinute));
+}
+
+export function snapshotMinutesForMarket(
+  market: MarketKey,
+  halfEndMinute?: number | null,
+): number[] {
   const start = market === MARKETS.h1 ? 0 : HALF_LENGTH_MINUTES;
-  return Array.from(
+  const minutes = Array.from(
     { length: SNAPSHOTS_PER_HALF },
     (_, index) => start + index * SNAPSHOT_INTERVAL_MINUTES,
   );
+  const extra = resolvedHalfEnd(market, halfEndMinute);
+  const last = minutes[minutes.length - 1] ?? start;
+  if (extra > last) minutes.push(extra);
+  return minutes;
 }
 
-export function walkSnapshotMinutes(fetchH1: boolean, fetchH2: boolean): number[] {
+export function walkSnapshotMinutes(
+  fetchH1: boolean,
+  fetchH2: boolean,
+  halfEnds?: { h1EndMinute?: number | null; h2EndMinute?: number | null } | null,
+): number[] {
   const minutes = new Set<number>();
   if (fetchH1) {
-    for (const minute of snapshotMinutesForMarket(MARKETS.h1)) minutes.add(minute);
+    for (const minute of snapshotMinutesForMarket(MARKETS.h1, halfEnds?.h1EndMinute)) {
+      minutes.add(minute);
+    }
   }
   if (fetchH2) {
-    for (const minute of snapshotMinutesForMarket(MARKETS.h2)) minutes.add(minute);
+    for (const minute of snapshotMinutesForMarket(MARKETS.h2, halfEnds?.h2EndMinute)) {
+      minutes.add(minute);
+    }
   }
   return [...minutes].sort((a, b) => a - b);
+}
+
+export function marketWindow(
+  market: MarketKey,
+  halfEndMinute?: number | null,
+): { min: number; max: number } {
+  const slack = SNAPSHOT_INTERVAL_MINUTES / 2;
+  const end = resolvedHalfEnd(market, halfEndMinute);
+  if (market === MARKETS.h1) return { min: 0, max: end + slack };
+  return { min: H1_WINDOW_MINUTES - slack, max: end + slack };
+}
+
+export function marketAxis(
+  market: MarketKey,
+  halfEndMinute?: number | null,
+): { domain: [number, number]; ticks: number[] } {
+  const end = resolvedHalfEnd(market, halfEndMinute);
+  if (market === MARKETS.h1) {
+    const ticks = [0, 15, 30, H1_WINDOW_MINUTES];
+    if (end > H1_WINDOW_MINUTES) ticks.push(end);
+    return { domain: [0, end], ticks };
+  }
+  const ticks = [H1_WINDOW_MINUTES, 60, 75, MATCH_WINDOW_MINUTES];
+  if (end > MATCH_WINDOW_MINUTES) ticks.push(end);
+  return { domain: [H1_WINDOW_MINUTES, end], ticks };
 }
 
 export const DEFAULT_LINES = [0.5, 1.5, 2.5, 3.5];

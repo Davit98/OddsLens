@@ -14,9 +14,17 @@ import {
   utcDay,
   type EspnFixture,
 } from "./espn";
-import type { GoalEvent, MatchRecord } from "./types";
+import type { GoalEvent, HalfEnds, MatchRecord } from "./types";
 
 const ESPN_POOL = 6;
+const EMPTY_HALF_ENDS: HalfEnds = { h1EndMinute: null, h2EndMinute: null };
+
+function detailsOf(eventId: string): { goals: GoalEvent[]; halfEnds: HalfEnds } {
+  return {
+    goals: getGoals(eventId),
+    halfEnds: getMatchEspn(eventId)?.halfEnds ?? EMPTY_HALF_ENDS,
+  };
+}
 
 async function mapPool<T>(
   items: T[],
@@ -88,10 +96,16 @@ export async function backfillEspnScores(sportKey: string): Promise<number> {
   return updated;
 }
 
-export async function ensureMatchDetails(match: MatchRecord): Promise<GoalEvent[]> {
+export async function ensureMatchDetails(
+  match: MatchRecord,
+): Promise<{ goals: GoalEvent[]; halfEnds: HalfEnds }> {
   const existing = getMatchEspn(match.id);
-  if (existing?.goalsFetched) {
-    return getGoals(match.id);
+  if (
+    existing?.goalsFetched &&
+    existing.halfEnds.h1EndMinute != null &&
+    existing.halfEnds.h2EndMinute != null
+  ) {
+    return detailsOf(match.id);
   }
 
   let espnEventId = existing?.espnEventId ?? null;
@@ -129,11 +143,11 @@ export async function ensureMatchDetails(match: MatchRecord): Promise<GoalEvent[
         }
       }
     } catch {
-      return getGoals(match.id);
+      return detailsOf(match.id);
     }
   }
 
-  if (!espnEventId || !espnLeague) return getGoals(match.id);
+  if (!espnEventId || !espnLeague) return detailsOf(match.id);
 
   try {
     const details = await fetchEspnGoals(espnLeague, espnEventId, match);
@@ -143,6 +157,7 @@ export async function ensureMatchDetails(match: MatchRecord): Promise<GoalEvent[
       espnEventId,
       espnLeague,
       goalsFetched: true,
+      halfEnds: details.halfEnds,
     });
     if (details.homeScore !== null && details.awayScore !== null) {
       upsertMatches([
@@ -160,8 +175,8 @@ export async function ensureMatchDetails(match: MatchRecord): Promise<GoalEvent[
       ]);
     }
   } catch {
-    return getGoals(match.id);
+    return detailsOf(match.id);
   }
 
-  return getGoals(match.id);
+  return detailsOf(match.id);
 }

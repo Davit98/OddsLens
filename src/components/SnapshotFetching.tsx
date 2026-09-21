@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { formatMinute } from "@/lib/format";
 import { H1_WINDOW_MINUTES, walkSnapshotMinutes } from "@/lib/leagues";
+import type { HalfEnds } from "@/lib/types";
 
 function axisLabels(minutes: number[]): number[] {
   const min = minutes[0] ?? 0;
@@ -94,12 +95,17 @@ export function SnapshotFetchingBanner({
   fetchH1,
   fetchH2,
   remaining,
+  halfEnds,
 }: {
   fetchH1: boolean;
   fetchH2: boolean;
   remaining: number;
+  halfEnds?: HalfEnds | null;
 }) {
-  const minutes = useMemo(() => walkSnapshotMinutes(fetchH1, fetchH2), [fetchH1, fetchH2]);
+  const minutes = useMemo(
+    () => walkSnapshotMinutes(fetchH1, fetchH2, halfEnds),
+    [fetchH1, fetchH2, halfEnds],
+  );
   const { tick, elapsedMs } = useWalkClock(true, minutes.length);
   const current = minutes[tick] ?? 0;
   const seconds = Math.max(1, Math.round(elapsedMs / 1000));

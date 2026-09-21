@@ -23,8 +23,9 @@ import {
   H1_WINDOW_MINUTES,
   MARKETS,
   MATCH_WINDOW_MINUTES,
-  SNAPSHOT_INTERVAL_MINUTES,
-  SNAPSHOTS_PER_HALF,
+  marketAxis,
+  marketWindow,
+  snapshotMinutesForMarket,
   leagueTitle,
   type MarketKey,
 } from "@/lib/leagues";
@@ -32,6 +33,7 @@ import type {
   CreditEstimate,
   Credits,
   GoalEvent,
+  HalfEnds,
   IngestResult,
   MatchRecord,
   OddsPoint,
@@ -47,6 +49,7 @@ type OddsResponse = {
   estimate: CreditEstimate;
   estimates?: Record<MarketKey, CreditEstimate>;
   goals?: GoalEvent[];
+  halfEnds?: HalfEnds;
   credits?: Credits;
   result?: IngestResult;
   error?: string;
@@ -149,9 +152,11 @@ function settleTimes(goals: GoalEvent[], market: MarketKey, lines: number[]) {
 export function MatchExplorer({
   match,
   initialGoals = [],
+  initialHalfEnds = { h1EndMinute: null, h2EndMinute: null },
 }: {
   match: MatchRecord;
   initialGoals?: GoalEvent[];
+  initialHalfEnds?: HalfEnds;
 }) {
   const { credits, setCredits } = useCredits();
   const [currentMatch, setCurrentMatch] = useState(match);
@@ -165,6 +170,7 @@ export function MatchExplorer({
     null,
   );
   const [goals, setGoals] = useState<GoalEvent[]>(initialGoals);
+  const [halfEnds, setHalfEnds] = useState<HalfEnds>(initialHalfEnds);
   const [loading, setLoading] = useState(true);
   const [fetching, setFetching] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -197,6 +203,7 @@ export function MatchExplorer({
       }
       if (data.match) setCurrentMatch(data.match);
       if (data.goals) setGoals(data.goals);
+      if (data.halfEnds) setHalfEnds(data.halfEnds);
       if (data.credits) setCredits(data.credits);
     },
     [setCredits],
@@ -224,7 +231,8 @@ export function MatchExplorer({
   useEffect(() => {
     setCurrentMatch(match);
     setGoals(initialGoals);
-  }, [initialGoals, match]);
+    setHalfEnds(initialHalfEnds);
+  }, [initialGoals, initialHalfEnds, match]);
 
   const availableLines = useMemo(() => {
     const points = new Set(
@@ -250,16 +258,29 @@ export function MatchExplorer({
     [goals, selectedLines, viewMarket],
   );
 
+  const viewedHalfEnd =
+    viewMarket === MARKETS.h1 ? halfEnds.h1EndMinute : halfEnds.h2EndMinute;
+  const axis = useMemo(
+    () => marketAxis(viewMarket, viewedHalfEnd),
+    [viewMarket, viewedHalfEnd],
+  );
+  const scheduleLabel = useMemo(() => {
+    const minutes = snapshotMinutesForMarket(viewMarket, viewedHalfEnd);
+    const start = minutes[0] ?? 0;
+    const last = minutes[minutes.length - 1] ?? start;
+    const regularEnd = viewMarket === MARKETS.h1 ? H1_WINDOW_MINUTES : MATCH_WINDOW_MINUTES;
+    if (last > regularEnd) {
+      return `${minutes.length} snapshots · every 5 minutes from ${start}' to ${regularEnd}', plus ${last}' half end`;
+    }
+    return `${minutes.length} snapshots per half, every 5 minutes from ${start}' to ${last}'`;
+  }, [viewMarket, viewedHalfEnd]);
+
   const snapshots = useMemo(() => {
-    const min =
-      viewMarket === MARKETS.h1 ? 0 : H1_WINDOW_MINUTES - SNAPSHOT_INTERVAL_MINUTES / 2;
-    const max =
-      (viewMarket === MARKETS.h1 ? H1_WINDOW_MINUTES : MATCH_WINDOW_MINUTES) +
-      SNAPSHOT_INTERVAL_MINUTES / 2;
+    const { min, max } = marketWindow(viewMarket, viewedHalfEnd);
     return marketSnapshots(series, viewMarket).filter(
       (snapshot) => snapshot.elapsedMinutes >= min && snapshot.elapsedMinutes <= max,
     );
-  }, [series, viewMarket]);
+  }, [series, viewMarket, viewedHalfEnd]);
 
   const chartRows = useMemo(
     () =>
@@ -448,6 +469,7 @@ export function MatchExplorer({
           fetchH1={fetchH1}
           fetchH2={fetchH2}
           remaining={estimate?.remainingSnapshots ?? 0}
+          halfEnds={halfEnds}
         />
       ) : message ? (
         <p className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-300">
@@ -518,9 +540,7 @@ export function MatchExplorer({
           <h2 className="text-sm font-semibold text-white">
             Over odds · {viewMarket === MARKETS.h1 ? "1st half" : "2nd half"}
           </h2>
-          <p className="text-xs text-slate-500">
-            {SNAPSHOTS_PER_HALF} snapshots per half, every 5 minutes from 0' to 45'
-          </p>
+          <p className="text-xs text-slate-500">{scheduleLabel}</p>
         </div>
         {loading && !fetching ? (
           <div className="py-16 text-center text-slate-400">Loading cached odds…</div>
@@ -548,16 +568,8 @@ export function MatchExplorer({
                 <XAxis
                   type="number"
                   dataKey="minute"
-                  domain={
-                    viewMarket === MARKETS.h1
-                      ? [0, H1_WINDOW_MINUTES]
-                      : [H1_WINDOW_MINUTES, MATCH_WINDOW_MINUTES]
-                  }
-                  ticks={
-                    viewMarket === MARKETS.h1
-                      ? [0, 15, 30, 45]
-                      : [45, 60, 75, 90]
-                  }
+                  domain={axis.domain}
+                  ticks={axis.ticks}
                   allowDataOverflow
                   stroke="#94a3b8"
                   tickFormatter={(value) => formatMinute(Number(value))}

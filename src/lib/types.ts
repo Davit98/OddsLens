@@ -41,6 +41,11 @@ export type GoalEvent = {
   penalty: boolean;
 };
 
+export type HalfEnds = {
+  h1EndMinute: number | null;
+  h2EndMinute: number | null;
+};
+
 export type CreditEstimate = {
   estimatedCredits: number;
   estimatedSnapshots: number;

@@ -2,17 +2,18 @@ import {
   countCachedSnapshots,
   findCoveringSnapshot,
   getCredits,
+  getMatchEspn,
   hasSnapshot,
   insertSnapshot,
 } from "./db";
 import {
   CREDIT_PER_MARKET,
-  SNAPSHOTS_PER_HALF,
+  MARKETS,
   snapshotMinutesForMarket,
   type MarketKey,
 } from "./leagues";
 import { getHistoricalEventOdds } from "./odds-api";
-import type { IngestResult } from "./types";
+import type { HalfEnds, IngestResult } from "./types";
 
 const REQUEST_GAP_MS = 1000;
 const MAX_STEPS = 48;
@@ -29,10 +30,16 @@ function addMinutes(iso: string, minutes: number): string {
   return toApiTimestamp(Date.parse(iso) + minutes * 60_000);
 }
 
+function halfEndForMarket(market: MarketKey, halfEnds?: HalfEnds | null): number | null {
+  if (!halfEnds) return null;
+  return market === MARKETS.h1 ? halfEnds.h1EndMinute : halfEnds.h2EndMinute;
+}
+
 export function estimateCredits(input: {
   eventId: string;
   bookmaker: string;
   markets: MarketKey[];
+  halfEnds?: HalfEnds | null;
 }): {
   estimatedCredits: number;
   estimatedSnapshots: number;
@@ -41,9 +48,13 @@ export function estimateCredits(input: {
 } {
   let estimatedSnapshots = 0;
   let alreadyCached = 0;
+  const storedHalfEnds = input.halfEnds ?? getMatchEspn(input.eventId)?.halfEnds ?? null;
 
   for (const market of input.markets) {
-    const expected = SNAPSHOTS_PER_HALF;
+    const expected = snapshotMinutesForMarket(
+      market,
+      halfEndForMarket(market, storedHalfEnds),
+    ).length;
     const cached = countCachedSnapshots(
       input.eventId,
       input.bookmaker,
@@ -91,9 +102,11 @@ export async function ingestMatchOdds(input: {
   commenceTime: string;
   bookmaker: string;
   markets: MarketKey[];
+  halfEnds?: HalfEnds | null;
 }): Promise<IngestResult> {
   const creditsBefore = getCredits();
   const usedBefore = creditsBefore.used ?? 0;
+  const halfEnds = input.halfEnds ?? getMatchEspn(input.eventId)?.halfEnds ?? null;
 
   let snapshotsFetched = 0;
   let snapshotsCached = 0;
@@ -103,7 +116,10 @@ export async function ingestMatchOdds(input: {
   let steps = 0;
 
   outer: for (const market of input.markets) {
-    for (const minute of snapshotMinutesForMarket(market)) {
+    for (const minute of snapshotMinutesForMarket(
+      market,
+      halfEndForMarket(market, halfEnds),
+    )) {
       steps += 1;
       if (steps > MAX_STEPS) break outer;
 
