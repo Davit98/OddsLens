@@ -1,17 +1,30 @@
 import { NextResponse } from "next/server";
 import { getCredits, listMatches } from "@/lib/db";
-import { LEAGUES, type LeagueKey } from "@/lib/leagues";
-import { refreshLeagueMatches } from "@/lib/matches";
+import {
+  LEAGUES,
+  lookbackDays,
+  parseLookback,
+  type LeagueKey,
+} from "@/lib/leagues";
+import {
+  commenceCutoffIso,
+  estimateHistoryCredits,
+  refreshLeagueMatches,
+} from "@/lib/matches";
 import { OddsApiError } from "@/lib/odds-api";
+
+export const dynamic = "force-dynamic";
+export const maxDuration = 300;
 
 function isLeagueKey(value: string): value is LeagueKey {
   return LEAGUES.some((league) => league.key === value);
 }
 
-export const dynamic = "force-dynamic";
-
 export async function GET(request: Request) {
-  const league = new URL(request.url).searchParams.get("league") ?? "all";
+  const params = new URL(request.url).searchParams;
+  const league = params.get("league") ?? "all";
+  const lookback = parseLookback(params.get("lookback"));
+  const days = lookbackDays(lookback);
   const sportKeys =
     league === "all"
       ? LEAGUES.map((item) => item.key)
@@ -25,20 +38,31 @@ export async function GET(request: Request) {
 
   try {
     const scoresFetched: string[] = [];
+    let historyDaysFetched = 0;
+    const estimatedHistoryCredits = estimateHistoryCredits(sportKeys, days);
+
     for (const sportKey of sportKeys) {
       try {
-        const result = await refreshLeagueMatches(sportKey);
+        const result = await refreshLeagueMatches(sportKey, days);
         if (result.scoresFetched) scoresFetched.push(sportKey);
+        historyDaysFetched += result.historyDaysFetched;
       } catch (error) {
         if (sportKeys.length === 1) throw error;
       }
     }
 
-    const matches = league === "all" ? listMatches() : listMatches(league);
+    const matches =
+      league === "all"
+        ? listMatches(undefined, commenceCutoffIso(days))
+        : listMatches(league, commenceCutoffIso(days));
 
     return NextResponse.json({
       matches,
+      lookback,
+      lookbackDays: days,
       scoresFetched,
+      historyDaysFetched,
+      estimatedHistoryCredits,
       credits: getCredits(),
     });
   } catch (error) {

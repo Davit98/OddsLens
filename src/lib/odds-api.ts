@@ -97,6 +97,25 @@ export function getScores(sportKey: string, daysFrom = 3): Promise<ScoreEvent[]>
   });
 }
 
+export type HistoricalEventsResponse = {
+  timestamp: string;
+  previous_timestamp: string | null;
+  next_timestamp: string | null;
+  data: ScoreEvent[];
+};
+
+export async function getHistoricalEvents(
+  sportKey: string,
+  date: string,
+): Promise<ScoreEvent[]> {
+  const payload = await oddsGet<HistoricalEventsResponse | ScoreEvent[]>(
+    `/historical/sports/${sportKey}/events`,
+    { date, dateFormat: "iso" },
+  );
+  if (Array.isArray(payload)) return payload;
+  return payload?.data ?? [];
+}
+
 export function getHistoricalEventOdds(input: {
   sportKey: string;
   eventId: string;

@@ -70,6 +70,27 @@ export const SNAPSHOT_INTERVAL_MINUTES = 5;
 export const CREDIT_PER_MARKET = 10;
 export const DEFAULT_LINES = [0.5, 1.5, 2.5, 3.5];
 
+export const LOOKBACK_OPTIONS = [
+  { key: "3", days: 3, label: "3 days" },
+  { key: "7", days: 7, label: "Week" },
+  { key: "30", days: 30, label: "Month" },
+  { key: "90", days: 90, label: "3 months" },
+] as const;
+
+export type LookbackKey = (typeof LOOKBACK_OPTIONS)[number]["key"];
+export const DEFAULT_LOOKBACK: LookbackKey = "3";
+export const SCORES_LOOKBACK_DAYS = 3;
+
+export function parseLookback(value: string | null): LookbackKey {
+  return LOOKBACK_OPTIONS.some((item) => item.key === value)
+    ? (value as LookbackKey)
+    : DEFAULT_LOOKBACK;
+}
+
+export function lookbackDays(key: LookbackKey): number {
+  return LOOKBACK_OPTIONS.find((item) => item.key === key)?.days ?? 3;
+}
+
 export function leagueTitle(sportKey: string): string {
   return LEAGUE_BY_KEY[sportKey as LeagueKey]?.title ?? sportKey;
 }

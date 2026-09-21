@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { LEAGUES, leagueTitle, type LeagueKey } from "@/lib/leagues";
+import { LEAGUES, LOOKBACK_OPTIONS, leagueTitle, type LeagueKey, type LookbackKey } from "@/lib/leagues";
 import { formatKickoff, matchStatus } from "@/lib/format";
 import type { Credits, MatchRecord } from "@/lib/types";
 import { useCredits } from "./CreditsProvider";
@@ -12,19 +12,25 @@ type LeagueFilter = "all" | LeagueKey;
 export function MatchList() {
   const { setCredits } = useCredits();
   const [league, setLeague] = useState<LeagueFilter>("all");
+  const [lookback, setLookback] = useState<LookbackKey>("3");
   const [matches, setMatches] = useState<MatchRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [scoresNote, setScoresNote] = useState<string | null>(null);
 
-  const load = useCallback(async (nextLeague: LeagueFilter) => {
+  const load = useCallback(async (nextLeague: LeagueFilter, nextLookback: LookbackKey) => {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`/api/matches?league=${nextLeague}`);
+      const response = await fetch(
+        `/api/matches?league=${nextLeague}&lookback=${nextLookback}`,
+      );
       const data = (await response.json()) as {
         matches?: MatchRecord[];
         scoresFetched?: string[];
+        historyDaysFetched?: number;
+        estimatedHistoryCredits?: number;
+        lookbackDays?: number;
         credits?: Credits;
         error?: string;
       };
@@ -33,15 +39,28 @@ export function MatchList() {
       }
       setMatches(data.matches ?? []);
       if (data.credits) setCredits(data.credits);
+      const notes: string[] = [];
       if (data.scoresFetched && data.scoresFetched.length > 0) {
-        setScoresNote(
-          `Completed-match list refreshed for ${data.scoresFetched.length} league${
+        notes.push(
+          `Last-3-day scores refreshed for ${data.scoresFetched.length} league${
             data.scoresFetched.length === 1 ? "" : "s"
           } (2 credits each, cached for today).`,
         );
-      } else {
-        setScoresNote("Completed matches loaded from today's cache. Upcoming fixtures are free.");
       }
+      if ((data.historyDaysFetched ?? 0) > 0) {
+        notes.push(
+          `Pulled ${data.historyDaysFetched} extra fixture-day snapshot${
+            data.historyDaysFetched === 1 ? "" : "s"
+          } (1 credit each, cached). Scores are only available for the last 3 days.`,
+        );
+      } else if ((data.lookbackDays ?? 3) > 3) {
+        notes.push(
+          "Older fixtures loaded from cache. The Odds API only returns scores for the last 3 days.",
+        );
+      } else {
+        notes.push("Completed matches loaded from today's cache. Upcoming fixtures are free.");
+      }
+      setScoresNote(notes.join(" "));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load matches");
     } finally {
@@ -50,8 +69,8 @@ export function MatchList() {
   }, [setCredits]);
 
   useEffect(() => {
-    void load(league);
-  }, [league, load]);
+    void load(league, lookback);
+  }, [league, lookback, load]);
 
   const grouped = useMemo(() => {
     const byLeague = new Map<string, MatchRecord[]>();
@@ -109,9 +128,25 @@ export function MatchList() {
         ))}
       </div>
 
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs uppercase tracking-[0.16em] text-slate-500">
+          Go back
+        </span>
+        {LOOKBACK_OPTIONS.map((item) => (
+          <FilterChip
+            key={item.key}
+            active={lookback === item.key}
+            onClick={() => setLookback(item.key)}
+            label={item.label}
+          />
+        ))}
+      </div>
+
       {loading ? (
         <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-10 text-center text-slate-400">
-          Loading fixtures…
+          {lookback === "3"
+            ? "Loading fixtures…"
+            : "Loading extra history… week and longer use 1 credit per league per uncached day."}
         </div>
       ) : error ? (
         <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-6 text-sm text-rose-100">

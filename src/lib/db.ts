@@ -57,6 +57,12 @@ function createDb(): Database.Database {
       sport_key TEXT PRIMARY KEY,
       scores_fetched_on TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS event_days (
+      sport_key TEXT NOT NULL,
+      day TEXT NOT NULL,
+      PRIMARY KEY (sport_key, day)
+    );
   `);
   return db;
 }
@@ -66,6 +72,13 @@ export function getDb(): Database.Database {
   if (!g.__oddslensDb) {
     g.__oddslensDb = createDb();
   }
+  g.__oddslensDb.exec(`
+    CREATE TABLE IF NOT EXISTS event_days (
+      sport_key TEXT NOT NULL,
+      day TEXT NOT NULL,
+      PRIMARY KEY (sport_key, day)
+    );
+  `);
   return g.__oddslensDb;
 }
 
@@ -159,26 +172,21 @@ export function upsertMatches(matches: MatchUpsert[]): void {
   tx(matches);
 }
 
-export function listMatches(sportKey?: string): MatchRecord[] {
+export function listMatches(sportKey?: string, commenceFrom?: string): MatchRecord[] {
   const db = getDb();
-  const rows = sportKey
-    ? (db
-        .prepare(
-          `SELECT m.*,
-            (SELECT COUNT(*) FROM snapshots s WHERE s.event_id = m.id) AS cached_snapshots
-           FROM matches m
-           WHERE m.sport_key = ?
-           ORDER BY m.commence_time DESC`,
-        )
-        .all(sportKey) as DbMatch[])
-    : (db
-        .prepare(
-          `SELECT m.*,
-            (SELECT COUNT(*) FROM snapshots s WHERE s.event_id = m.id) AS cached_snapshots
-           FROM matches m
-           ORDER BY m.commence_time DESC`,
-        )
-        .all() as DbMatch[]);
+  const sql = `
+    SELECT m.*,
+      (SELECT COUNT(*) FROM snapshots s WHERE s.event_id = m.id) AS cached_snapshots
+    FROM matches m
+    WHERE m.commence_time >= ?
+      ${sportKey ? "AND m.sport_key = ?" : ""}
+    ORDER BY m.commence_time DESC
+  `;
+  const rows = (
+    sportKey
+      ? db.prepare(sql).all(commenceFrom ?? "1970-01-01", sportKey)
+      : db.prepare(sql).all(commenceFrom ?? "1970-01-01")
+  ) as DbMatch[];
 
   return rows.map(mapMatch);
 }
@@ -217,6 +225,26 @@ export function setScoresFetchedOn(sportKey: string, day: string): void {
        ON CONFLICT(sport_key) DO UPDATE SET scores_fetched_on = excluded.scores_fetched_on`,
     )
     .run(sportKey, day);
+}
+
+export function hasEventDay(sportKey: string, day: string): boolean {
+  const row = getDb()
+    .prepare("SELECT 1 AS ok FROM event_days WHERE sport_key = ? AND day = ?")
+    .get(sportKey, day) as { ok: number } | undefined;
+  return Boolean(row);
+}
+
+export function markEventDay(sportKey: string, day: string): void {
+  getDb()
+    .prepare(
+      `INSERT INTO event_days (sport_key, day) VALUES (?, ?)
+       ON CONFLICT(sport_key, day) DO NOTHING`,
+    )
+    .run(sportKey, day);
+}
+
+export function countMissingEventDays(sportKey: string, days: string[]): number {
+  return days.filter((day) => !hasEventDay(sportKey, day)).length;
 }
 
 export function findCoveringSnapshot(
