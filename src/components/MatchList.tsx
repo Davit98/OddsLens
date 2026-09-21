@@ -1,0 +1,226 @@
+"use client";
+
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { LEAGUES, leagueTitle, type LeagueKey } from "@/lib/leagues";
+import { formatKickoff, matchStatus } from "@/lib/format";
+import type { Credits, MatchRecord } from "@/lib/types";
+import { useCredits } from "./CreditsProvider";
+
+type LeagueFilter = "all" | LeagueKey;
+
+export function MatchList() {
+  const { setCredits } = useCredits();
+  const [league, setLeague] = useState<LeagueFilter>("all");
+  const [matches, setMatches] = useState<MatchRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [scoresNote, setScoresNote] = useState<string | null>(null);
+
+  const load = useCallback(async (nextLeague: LeagueFilter) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/matches?league=${nextLeague}`);
+      const data = (await response.json()) as {
+        matches?: MatchRecord[];
+        scoresFetched?: string[];
+        credits?: Credits;
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(data.error ?? "Failed to load matches");
+      }
+      setMatches(data.matches ?? []);
+      if (data.credits) setCredits(data.credits);
+      if (data.scoresFetched && data.scoresFetched.length > 0) {
+        setScoresNote(
+          `Completed-match list refreshed for ${data.scoresFetched.length} league${
+            data.scoresFetched.length === 1 ? "" : "s"
+          } (2 credits each, cached for today).`,
+        );
+      } else {
+        setScoresNote("Completed matches loaded from today's cache. Upcoming fixtures are free.");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load matches");
+    } finally {
+      setLoading(false);
+    }
+  }, [setCredits]);
+
+  useEffect(() => {
+    void load(league);
+  }, [league, load]);
+
+  const grouped = useMemo(() => {
+    const byLeague = new Map<string, MatchRecord[]>();
+    for (const match of matches) {
+      const list = byLeague.get(match.sportKey) ?? [];
+      list.push(match);
+      byLeague.set(match.sportKey, list);
+    }
+
+    const rank = (match: MatchRecord) => {
+      const status = matchStatus(match.commenceTime, match.completed);
+      if (status === "live") return 0;
+      if (status === "ft") return 1;
+      return 2;
+    };
+
+    return LEAGUES.filter((item) => byLeague.has(item.key)).map((item) => ({
+      ...item,
+      matches: [...(byLeague.get(item.key) ?? [])].sort((a, b) => {
+        const rankDiff = rank(a) - rank(b);
+        if (rankDiff !== 0) return rankDiff;
+        return Date.parse(b.commenceTime) - Date.parse(a.commenceTime);
+      }),
+    }));
+  }, [matches]);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-white">
+            Big 5 half totals
+          </h1>
+          <p className="mt-1 max-w-2xl text-sm text-slate-400">
+            On-demand historical Over lines for 1st and 2nd half alternate totals.
+            Snapshots are stored locally so a match is only billed once per bookmaker.
+          </p>
+        </div>
+        <p className="max-w-sm text-xs leading-5 text-slate-500">{scoresNote}</p>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <FilterChip
+          active={league === "all"}
+          onClick={() => setLeague("all")}
+          label="All leagues"
+        />
+        {LEAGUES.map((item) => (
+          <FilterChip
+            key={item.key}
+            active={league === item.key}
+            onClick={() => setLeague(item.key)}
+            label={item.short}
+          />
+        ))}
+      </div>
+
+      {loading ? (
+        <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-10 text-center text-slate-400">
+          Loading fixtures…
+        </div>
+      ) : error ? (
+        <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-6 text-sm text-rose-100">
+          {error}
+        </div>
+      ) : grouped.length === 0 ? (
+        <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-10 text-center text-slate-400">
+          No recent fixtures found.
+        </div>
+      ) : (
+        grouped.map((group) => (
+          <section key={group.key} className="space-y-3">
+            <div className="flex items-baseline justify-between">
+              <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">
+                {group.title}
+              </h2>
+              <span className="text-xs text-slate-500">{group.country}</span>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              {group.matches.map((match) => (
+                <MatchCard key={match.id} match={match} />
+              ))}
+            </div>
+          </section>
+        ))
+      )}
+    </div>
+  );
+}
+
+function FilterChip({
+  active,
+  onClick,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-full px-3 py-1.5 text-sm transition ${
+        active
+          ? "bg-emerald-400 text-slate-950"
+          : "border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function MatchCard({ match }: { match: MatchRecord }) {
+  const status = matchStatus(match.commenceTime, match.completed);
+  return (
+    <Link
+      href={`/matches/${match.id}`}
+      className="group rounded-2xl border border-white/10 bg-gradient-to-br from-white/10 to-white/5 p-4 transition hover:border-emerald-400/40 hover:bg-white/10"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.16em] text-slate-500">
+            {leagueTitle(match.sportKey)}
+          </p>
+          <p className="mt-2 text-base font-medium text-white">
+            {match.homeTeam}{" "}
+            <span className="text-slate-500">vs</span> {match.awayTeam}
+          </p>
+          <p className="mt-1 text-sm text-slate-400">{formatKickoff(match.commenceTime)}</p>
+        </div>
+        <div className="text-right">
+          <StatusBadge status={status} />
+          {match.homeScore !== null && match.awayScore !== null ? (
+            <p className="mt-2 font-mono text-lg text-white">
+              {match.homeScore}–{match.awayScore}
+            </p>
+          ) : null}
+        </div>
+      </div>
+      <div className="mt-4 flex items-center justify-between text-xs text-slate-500">
+        <span>
+          {match.cachedSnapshots > 0
+            ? `${match.cachedSnapshots} cached snapshots`
+            : "Not fetched yet"}
+        </span>
+        {match.cachedBookmakers.length > 0 ? (
+          <span className="rounded-full bg-emerald-400/15 px-2 py-0.5 text-emerald-300">
+            Cached
+          </span>
+        ) : (
+          <span className="text-slate-600">Open to fetch</span>
+        )}
+      </div>
+    </Link>
+  );
+}
+
+function StatusBadge({ status }: { status: ReturnType<typeof matchStatus> }) {
+  const styles = {
+    upcoming: "bg-sky-400/15 text-sky-300",
+    live: "bg-amber-400/15 text-amber-300",
+    ft: "bg-white/10 text-slate-300",
+  };
+  const labels = { upcoming: "Upcoming", live: "Live", ft: "FT" };
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${styles[status]}`}>
+      {labels[status]}
+    </span>
+  );
+}

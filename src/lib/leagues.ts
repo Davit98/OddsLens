@@ -1,0 +1,75 @@
+export const LEAGUES = [
+  {
+    key: "soccer_epl",
+    title: "Premier League",
+    country: "England",
+    short: "EPL",
+  },
+  {
+    key: "soccer_spain_la_liga",
+    title: "La Liga",
+    country: "Spain",
+    short: "La Liga",
+  },
+  {
+    key: "soccer_germany_bundesliga",
+    title: "Bundesliga",
+    country: "Germany",
+    short: "Bundesliga",
+  },
+  {
+    key: "soccer_italy_serie_a",
+    title: "Serie A",
+    country: "Italy",
+    short: "Serie A",
+  },
+  {
+    key: "soccer_france_ligue_one",
+    title: "Ligue 1",
+    country: "France",
+    short: "Ligue 1",
+  },
+] as const;
+
+export type LeagueKey = (typeof LEAGUES)[number]["key"];
+
+export const LEAGUE_BY_KEY = Object.fromEntries(
+  LEAGUES.map((league) => [league.key, league]),
+) as Record<LeagueKey, (typeof LEAGUES)[number]>;
+
+export const BOOKMAKERS = [
+  { key: "pinnacle", title: "Pinnacle", region: "EU" },
+  { key: "bet365", title: "bet365", region: "UK" },
+  { key: "onexbet", title: "1xBet", region: "EU" },
+  { key: "williamhill", title: "William Hill", region: "UK" },
+  { key: "unibet_uk", title: "Unibet", region: "UK" },
+  { key: "betfair_ex_uk", title: "Betfair Exchange", region: "UK" },
+  { key: "paddypower", title: "Paddy Power", region: "UK" },
+  { key: "skybet", title: "Sky Bet", region: "UK" },
+  { key: "ladbrokes_uk", title: "Ladbrokes", region: "UK" },
+  { key: "marathonbet", title: "Marathonbet", region: "EU" },
+  { key: "betclic", title: "Betclic", region: "EU" },
+  { key: "nordicbet", title: "NordicBet", region: "EU" },
+  { key: "betsson", title: "Betsson", region: "EU" },
+  { key: "draftkings", title: "DraftKings", region: "US" },
+  { key: "fanduel", title: "FanDuel", region: "US" },
+] as const;
+
+export const DEFAULT_BOOKMAKER = "pinnacle";
+
+export const MARKETS = {
+  h1: "alternate_totals_h1",
+  h2: "alternate_totals_h2",
+} as const;
+
+export type MarketKey = (typeof MARKETS)[keyof typeof MARKETS];
+
+export const H1_WINDOW_MINUTES = 60;
+export const MATCH_WINDOW_MINUTES = 120;
+export const SNAPSHOT_INTERVAL_MINUTES = 5;
+export const CREDIT_PER_MARKET = 10;
+export const DEFAULT_LINES = [0.5, 1.5, 2.5, 3.5];
+
+export function leagueTitle(sportKey: string): string {
+  return LEAGUE_BY_KEY[sportKey as LeagueKey]?.title ?? sportKey;
+}
