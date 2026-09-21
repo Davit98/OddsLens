@@ -80,3 +80,100 @@ body {
 .history-dot:nth-child(3) {
   animation-delay: 0.32s;
 }
+
+@keyframes fetch-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes fetch-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.12);
+    border-color: rgba(52, 211, 153, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 28px 2px rgba(52, 211, 153, 0.28);
+    border-color: rgba(52, 211, 153, 0.55);
+  }
+}
+
+@keyframes fetch-radar {
+  0% {
+    transform: translateX(-30%);
+    opacity: 0;
+  }
+  18% {
+    opacity: 1;
+  }
+  82% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(130%);
+    opacity: 0;
+  }
+}
+
+@keyframes fetch-draw {
+  0% {
+    stroke-dashoffset: 420;
+  }
+  70% {
+    stroke-dashoffset: 0;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes fetch-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+
+.fetch-spinner {
+  animation: fetch-spin 0.7s linear infinite;
+}
+
+.fetch-glow {
+  animation: fetch-glow 1.8s ease-in-out infinite;
+}
+
+.fetch-radar {
+  animation: fetch-radar 2.4s ease-in-out infinite;
+}
+
+.fetch-draw {
+  stroke-dasharray: 420;
+  stroke-dashoffset: 420;
+  animation: fetch-draw 7s ease-in-out infinite;
+}
+
+.fetch-draw-delay {
+  animation-delay: 0.45s;
+}
+
+.fetch-float {
+  animation: fetch-float 2.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fetch-spinner,
+  .fetch-glow,
+  .fetch-radar,
+  .fetch-draw,
+  .fetch-float,
+  .history-shimmer,
+  .history-indeterminate,
+  .history-pulse,
+  .history-dot {
+    animation: none;
+  }
+}

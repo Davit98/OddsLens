@@ -2,6 +2,7 @@ import {
   countCachedSnapshots,
   findCoveringSnapshot,
   getCredits,
+  hasSnapshot,
   insertSnapshot,
 } from "./db";
 import {
@@ -16,19 +17,35 @@ import { getHistoricalEventOdds } from "./odds-api";
 import type { IngestResult } from "./types";
 
 const REQUEST_GAP_MS = 1000;
-const MAX_EMPTY_STREAK = 3;
-const MAX_STEPS = 40;
+const MAX_STEPS = 48;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function toApiTimestamp(ms: number): string {
+  return new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
 function addMinutes(iso: string, minutes: number): string {
-  return new Date(Date.parse(iso) + minutes * 60_000).toISOString();
+  return toApiTimestamp(Date.parse(iso) + minutes * 60_000);
 }
 
 function elapsedMinutes(fromIso: string, toIso: string): number {
   return (Date.parse(toIso) - Date.parse(fromIso)) / 60_000;
+}
+
+function advanceDate(
+  requestedDate: string,
+  timestamp: string,
+  nextTimestamp: string | null,
+): string {
+  const floor = Math.max(Date.parse(requestedDate), Date.parse(timestamp));
+  const next = nextTimestamp ? Date.parse(nextTimestamp) : Number.NaN;
+  if (Number.isFinite(next) && next > floor) {
+    return nextTimestamp as string;
+  }
+  return toApiTimestamp(floor + SNAPSHOT_INTERVAL_MINUTES * 60_000);
 }
 
 function marketForElapsed(minutes: number): MarketKey {
@@ -116,7 +133,6 @@ export async function ingestMatchOdds(input: {
   let snapshotsCached = 0;
   let snapshotsSkipped = 0;
   let emptyResponses = 0;
-  let emptyStreak = 0;
   let lastRequestAt = 0;
   let steps = 0;
 
@@ -137,12 +153,7 @@ export async function ingestMatchOdds(input: {
     );
     if (existing) {
       snapshotsSkipped += 1;
-      const next = existing.nextTimestamp ?? addMinutes(date, SNAPSHOT_INTERVAL_MINUTES);
-      date =
-        Date.parse(next) > Date.parse(date)
-          ? next
-          : addMinutes(date, SNAPSHOT_INTERVAL_MINUTES);
-      emptyStreak = 0;
+      date = advanceDate(date, existing.timestamp, existing.nextTimestamp);
       continue;
     }
 
@@ -159,6 +170,12 @@ export async function ingestMatchOdds(input: {
     lastRequestAt = Date.now();
     snapshotsFetched += 1;
 
+    if (hasSnapshot(input.eventId, input.bookmaker, market, response.timestamp)) {
+      snapshotsSkipped += 1;
+      date = advanceDate(date, response.timestamp, response.next_timestamp);
+      continue;
+    }
+
     const bookmaker = response.data.bookmakers.find(
       (item) => item.key === input.bookmaker,
     ) ?? response.data.bookmakers[0];
@@ -166,20 +183,19 @@ export async function ingestMatchOdds(input: {
 
     if (!bookmaker || !marketData || marketData.outcomes.length === 0) {
       emptyResponses += 1;
-      emptyStreak += 1;
-      if (emptyStreak >= MAX_EMPTY_STREAK) {
-        if (market === MARKETS.h1 && input.markets.includes(MARKETS.h2)) {
-          date = addMinutes(input.commenceTime, H1_WINDOW_MINUTES);
-          emptyStreak = 0;
-          continue;
-        }
-        break;
-      }
-      date = response.next_timestamp ?? addMinutes(date, SNAPSHOT_INTERVAL_MINUTES);
+      insertSnapshot({
+        eventId: input.eventId,
+        bookmaker: input.bookmaker,
+        market,
+        timestamp: response.timestamp,
+        previousTimestamp: response.previous_timestamp,
+        nextTimestamp: response.next_timestamp,
+        outcomes: [],
+      });
+      date = advanceDate(date, response.timestamp, response.next_timestamp);
       continue;
     }
 
-    emptyStreak = 0;
     insertSnapshot({
       eventId: input.eventId,
       bookmaker: bookmaker.key,
@@ -190,13 +206,7 @@ export async function ingestMatchOdds(input: {
       outcomes: groupOutcomes(marketData.outcomes),
     });
     snapshotsCached += 1;
-
-    const next = response.next_timestamp ?? addMinutes(date, SNAPSHOT_INTERVAL_MINUTES);
-    if (Date.parse(next) <= Date.parse(response.timestamp)) {
-      date = addMinutes(response.timestamp, SNAPSHOT_INTERVAL_MINUTES);
-    } else {
-      date = next;
-    }
+    date = advanceDate(date, response.timestamp, response.next_timestamp);
   }
 
   const credits = getCredits();
@@ -211,13 +221,15 @@ export async function ingestMatchOdds(input: {
           : "none";
 
   const message =
-    coverage === "none"
-      ? `No ${input.markets.join(" / ")} odds from this bookmaker in the match window. Empty historical responses are not billed.`
-      : coverage === "partial"
-        ? `Saved ${snapshotsCached} snapshots (${snapshotsSkipped} already cached). Some timestamps had no market for this book.`
-        : snapshotsFetched === 0
-          ? `All ${snapshotsSkipped} snapshots were already cached. No credits used.`
-          : `Saved ${snapshotsCached} new snapshots (${snapshotsSkipped} already cached).`;
+    snapshotsFetched === 0
+      ? `All ${snapshotsSkipped} snapshots were already cached. No credits used.`
+      : coverage === "none" && snapshotsSkipped === 0
+        ? `No ${input.markets.join(" / ")} odds from this bookmaker in the match window. Empty historical responses are not billed.`
+        : coverage === "none"
+          ? `No new odds. ${snapshotsSkipped} timestamps already cached; the rest had no market for this book. Empty historical responses are not billed.`
+          : coverage === "partial"
+            ? `Saved ${snapshotsCached} new snapshots (${snapshotsSkipped} already cached). ${emptyResponses} timestamps had no market for this book.`
+            : `Saved ${snapshotsCached} new snapshots (${snapshotsSkipped} already cached).`;
 
   return {
     eventId: input.eventId,

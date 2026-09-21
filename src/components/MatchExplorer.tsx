@@ -13,12 +13,15 @@ import {
   YAxis,
 } from "recharts";
 import { useCredits } from "./CreditsProvider";
+import { SnapshotFetchingBanner, SnapshotFetchingStage } from "./SnapshotFetching";
 import { formatKickoff, formatMinute, formatOdds } from "@/lib/format";
 import {
   BOOKMAKERS,
   DEFAULT_BOOKMAKER,
   DEFAULT_LINES,
+  H1_WINDOW_MINUTES,
   MARKETS,
+  MATCH_WINDOW_MINUTES,
   leagueTitle,
   type MarketKey,
 } from "@/lib/leagues";
@@ -198,7 +201,8 @@ export function MatchExplorer({ match }: { match: MatchRecord }) {
             <select
               value={bookmaker}
               onChange={(event) => setBookmaker(event.target.value)}
-              className="w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-white outline-none ring-emerald-400/40 focus:ring"
+              disabled={fetching}
+              className="w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-white outline-none ring-emerald-400/40 focus:ring disabled:opacity-60"
             >
               {BOOKMAKERS.map((item) => (
                 <option key={item.key} value={item.key}>
@@ -214,6 +218,7 @@ export function MatchExplorer({ match }: { match: MatchRecord }) {
                 <input
                   type="checkbox"
                   checked={fetchH1}
+                  disabled={fetching}
                   onChange={(event) => setFetchH1(event.target.checked)}
                 />
                 1st half
@@ -222,6 +227,7 @@ export function MatchExplorer({ match }: { match: MatchRecord }) {
                 <input
                   type="checkbox"
                   checked={fetchH2}
+                  disabled={fetching}
                   onChange={(event) => setFetchH2(event.target.checked)}
                 />
                 2nd half
@@ -230,7 +236,11 @@ export function MatchExplorer({ match }: { match: MatchRecord }) {
           </div>
         </div>
 
-        <div className="flex flex-col justify-between gap-3 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3">
+        <div
+          className={`flex flex-col justify-between gap-3 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3 ${
+            fetching ? "fetch-glow" : ""
+          }`}
+        >
           <div className="text-sm">
             <p className="text-slate-300">Estimated cost</p>
             <p className="font-mono text-2xl font-semibold text-emerald-300">
@@ -248,18 +258,35 @@ export function MatchExplorer({ match }: { match: MatchRecord }) {
             type="button"
             onClick={() => void handleFetch()}
             disabled={fetching || (estimate?.remainingSnapshots ?? 1) === 0}
-            className="rounded-xl bg-emerald-400 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-slate-600 disabled:text-slate-300"
+            className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+              fetching
+                ? "bg-emerald-400 text-slate-950"
+                : (estimate?.remainingSnapshots ?? 1) === 0
+                  ? "cursor-not-allowed bg-slate-600 text-slate-300"
+                  : "bg-emerald-400 text-slate-950 hover:bg-emerald-300"
+            }`}
           >
-            {fetching
-              ? "Fetching…"
-              : estimate?.remainingSnapshots === 0
-                ? "Already cached"
-                : "Fetch missing snapshots"}
+            {fetching ? (
+              <span className="inline-flex items-center justify-center gap-2">
+                <span className="fetch-spinner h-3.5 w-3.5 rounded-full border-2 border-slate-950/25 border-t-slate-950" />
+                Fetching…
+              </span>
+            ) : estimate?.remainingSnapshots === 0 ? (
+              "Already cached"
+            ) : (
+              "Fetch missing snapshots"
+            )}
           </button>
         </div>
       </div>
 
-      {message ? (
+      {fetching ? (
+        <SnapshotFetchingBanner
+          fetchH1={fetchH1}
+          fetchH2={fetchH2}
+          remaining={estimate?.remainingSnapshots ?? 0}
+        />
+      ) : message ? (
         <p className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-300">
           {message}
         </p>
@@ -332,11 +359,15 @@ export function MatchExplorer({ match }: { match: MatchRecord }) {
             Historical resolution is ~5 minutes, plotted by elapsed match time
           </p>
         </div>
-        {loading ? (
+        {fetching && chartRows.length === 0 ? (
+          <SnapshotFetchingStage fetchH1={fetchH1} fetchH2={fetchH2} />
+        ) : loading ? (
           <div className="py-16 text-center text-slate-400">Loading cached odds…</div>
         ) : chartRows.length === 0 ? (
           <div className="py-16 text-center text-slate-400">
-            No cached odds for this bookmaker and half. Fetch snapshots to populate the chart.
+            {estimate?.remainingSnapshots === 0
+              ? "This bookmaker has no half-total odds in the cached window."
+              : "No cached odds for this bookmaker and half. Fetch snapshots to populate the chart."}
           </div>
         ) : (
           <div className="h-[360px]">
@@ -344,7 +375,19 @@ export function MatchExplorer({ match }: { match: MatchRecord }) {
               <LineChart data={chartRows} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
                 <CartesianGrid stroke="rgba(255,255,255,0.06)" />
                 <XAxis
+                  type="number"
                   dataKey="minute"
+                  domain={
+                    viewMarket === MARKETS.h1
+                      ? [0, H1_WINDOW_MINUTES]
+                      : [H1_WINDOW_MINUTES, MATCH_WINDOW_MINUTES]
+                  }
+                  ticks={
+                    viewMarket === MARKETS.h1
+                      ? [0, 15, 30, 45, 60]
+                      : [60, 75, 90, 105, 120]
+                  }
+                  allowDataOverflow
                   stroke="#94a3b8"
                   tickFormatter={(value) => formatMinute(Number(value))}
                 />

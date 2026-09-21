@@ -267,6 +267,21 @@ export function findCoveringSnapshot(
   return row ? mapSnapshot(row) : null;
 }
 
+export function hasSnapshot(
+  eventId: string,
+  bookmaker: string,
+  market: string,
+  timestamp: string,
+): boolean {
+  const row = getDb()
+    .prepare(
+      `SELECT 1 AS ok FROM snapshots
+       WHERE event_id = ? AND bookmaker = ? AND market = ? AND timestamp = ?`,
+    )
+    .get(eventId, bookmaker, market, timestamp) as { ok: number } | undefined;
+  return Boolean(row);
+}
+
 export function countCachedSnapshots(
   eventId: string,
   bookmaker: string,
@@ -369,7 +384,7 @@ export function getOddsSeries(input: {
   const kickoff = Date.parse(input.commenceTime);
   return rows.map((row) => ({
     timestamp: row.timestamp,
-    elapsedMinutes: (Date.parse(row.timestamp) - kickoff) / 60000,
+    elapsedMinutes: Math.max(0, (Date.parse(row.timestamp) - kickoff) / 60000),
     point: row.point,
     overPrice: row.over_price,
     underPrice: row.under_price,

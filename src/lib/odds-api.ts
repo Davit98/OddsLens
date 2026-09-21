@@ -1,4 +1,5 @@
 import { saveCredits } from "./db";
+import { BOOKMAKERS } from "./leagues";
 
 const BASE_URL = "https://api.the-odds-api.com/v4";
 
@@ -116,6 +117,11 @@ export async function getHistoricalEvents(
   return payload?.data ?? [];
 }
 
+function regionForBookmaker(bookmaker: string): string {
+  const match = BOOKMAKERS.find((item) => item.key === bookmaker);
+  return match ? match.region.toLowerCase() : "eu";
+}
+
 export function getHistoricalEventOdds(input: {
   sportKey: string;
   eventId: string;
@@ -126,7 +132,7 @@ export function getHistoricalEventOdds(input: {
   return oddsGet(
     `/historical/sports/${input.sportKey}/events/${input.eventId}/odds`,
     {
-      regions: "eu",
+      regions: regionForBookmaker(input.bookmaker),
       bookmakers: input.bookmaker,
       markets: input.markets,
       date: input.date,
