@@ -14,7 +14,7 @@ import {
   YAxis,
 } from "recharts";
 import { useCredits } from "./CreditsProvider";
-import { SnapshotFetchingBanner, SnapshotFetchingStage } from "./SnapshotFetching";
+import { SnapshotFetchingBanner } from "./SnapshotFetching";
 import { formatKickoff, formatMinute, formatOdds, formatScore } from "@/lib/format";
 import {
   BOOKMAKERS,
@@ -23,6 +23,8 @@ import {
   H1_WINDOW_MINUTES,
   MARKETS,
   MATCH_WINDOW_MINUTES,
+  SNAPSHOT_INTERVAL_MINUTES,
+  SNAPSHOTS_PER_HALF,
   leagueTitle,
   type MarketKey,
 } from "@/lib/leagues";
@@ -84,6 +86,46 @@ function lastName(name: string | null): string | null {
   if (!name) return null;
   const parts = name.trim().split(/\s+/);
   return parts[parts.length - 1] ?? name;
+}
+
+type LinePrices = { overPrice: number | null; underPrice: number | null };
+
+type MarketSnapshot = {
+  timestamp: string;
+  elapsedMinutes: number;
+  prices: Map<number, LinePrices>;
+};
+
+function marketSnapshots(series: SeriesPoint[], market: MarketKey): MarketSnapshot[] {
+  const byTimestamp = new Map<string, MarketSnapshot>();
+  for (const row of series) {
+    if (row.market !== market) continue;
+    const current = byTimestamp.get(row.timestamp) ?? {
+      timestamp: row.timestamp,
+      elapsedMinutes: row.elapsedMinutes,
+      prices: new Map(),
+    };
+    if (row.point !== null) {
+      current.prices.set(row.point, {
+        overPrice: row.overPrice,
+        underPrice: row.underPrice,
+      });
+    }
+    byTimestamp.set(row.timestamp, current);
+  }
+  return [...byTimestamp.values()].sort(
+    (a, b) => a.elapsedMinutes - b.elapsedMinutes,
+  );
+}
+
+function overAt(
+  snapshot: MarketSnapshot,
+  line: number,
+  settled: Map<number, number>,
+): number | null {
+  const settledAt = settled.get(line);
+  if (settledAt !== undefined && snapshot.elapsedMinutes > settledAt) return null;
+  return snapshot.prices.get(line)?.overPrice ?? null;
 }
 
 function settleTimes(goals: GoalEvent[], market: MarketKey, lines: number[]) {
@@ -186,7 +228,9 @@ export function MatchExplorer({
 
   const availableLines = useMemo(() => {
     const points = new Set(
-      series.filter((row) => row.market === viewMarket).map((row) => row.point),
+      series
+        .filter((row) => row.market === viewMarket && row.point !== null)
+        .map((row) => row.point as number),
     );
     return [...points].sort((a, b) => a - b);
   }, [series, viewMarket]);
@@ -196,7 +240,8 @@ export function MatchExplorer({
     setSelectedLines((current) => {
       const stillVisible = current.filter((line) => availableLines.includes(line));
       if (stillVisible.length > 0) return stillVisible;
-      return availableLines.filter((line) => line % 1 === 0.5).slice(0, 4);
+      const halves = availableLines.filter((line) => line % 1 === 0.5).slice(0, 4);
+      return halves.length > 0 ? halves : availableLines.slice(0, 4);
     });
   }, [availableLines]);
 
@@ -205,44 +250,29 @@ export function MatchExplorer({
     [goals, selectedLines, viewMarket],
   );
 
-  const chartRows = useMemo(() => {
-    const byMinute = new Map<number, Record<string, number | string>>();
-    const lastPrice = new Map<number, number>();
-    for (const row of series) {
-      if (row.market !== viewMarket) continue;
-      if (!selectedLines.includes(row.point) || row.overPrice === null) continue;
-      const settledAt = settled.get(row.point);
-      if (settledAt !== undefined && row.elapsedMinutes > settledAt) continue;
-      const minute = Math.round(row.elapsedMinutes * 10) / 10;
-      const current = byMinute.get(minute) ?? { minute };
-      current[`O${row.point}`] = row.overPrice;
-      byMinute.set(minute, current);
-      lastPrice.set(row.point, row.overPrice);
-    }
-    for (const [line, at] of settled) {
-      const price = lastPrice.get(line);
-      if (price === undefined) continue;
-      const minute = Math.round(at * 10) / 10;
-      const current = byMinute.get(minute) ?? { minute };
-      current[`O${line}`] = price;
-      byMinute.set(minute, current);
-    }
-    return [...byMinute.values()].sort(
-      (a, b) => Number(a.minute) - Number(b.minute),
+  const snapshots = useMemo(() => {
+    const min =
+      viewMarket === MARKETS.h1 ? 0 : H1_WINDOW_MINUTES - SNAPSHOT_INTERVAL_MINUTES / 2;
+    const max =
+      (viewMarket === MARKETS.h1 ? H1_WINDOW_MINUTES : MATCH_WINDOW_MINUTES) +
+      SNAPSHOT_INTERVAL_MINUTES / 2;
+    return marketSnapshots(series, viewMarket).filter(
+      (snapshot) => snapshot.elapsedMinutes >= min && snapshot.elapsedMinutes <= max,
     );
-  }, [selectedLines, series, settled, viewMarket]);
+  }, [series, viewMarket]);
 
-  const tableRows = useMemo(
+  const chartRows = useMemo(
     () =>
-      series
-        .filter((row) => row.market === viewMarket)
-        .filter((row) => selectedLines.includes(row.point))
-        .filter((row) => {
-          const settledAt = settled.get(row.point);
-          return settledAt === undefined || row.elapsedMinutes <= settledAt;
-        })
-        .sort((a, b) => a.elapsedMinutes - b.elapsedMinutes || a.point - b.point),
-    [selectedLines, series, settled, viewMarket],
+      snapshots.map((snapshot) => {
+        const row: Record<string, number | string | null> = {
+          minute: Math.round(snapshot.elapsedMinutes * 10) / 10,
+        };
+        for (const line of selectedLines) {
+          row[`O${line}`] = overAt(snapshot, line, settled);
+        }
+        return row;
+      }),
+    [selectedLines, settled, snapshots],
   );
 
   async function handleFetch() {
@@ -280,9 +310,6 @@ export function MatchExplorer({
 
   const ftScore = formatScore(currentMatch.homeScore, currentMatch.awayScore);
   const viewedRemaining = estimates?.[viewMarket]?.remainingSnapshots ?? 0;
-  const viewedHasOdds = series.some(
-    (row) => row.market === viewMarket && row.overPrice !== null,
-  );
 
   return (
     <div className="space-y-6">
@@ -492,24 +519,26 @@ export function MatchExplorer({
             Over odds · {viewMarket === MARKETS.h1 ? "1st half" : "2nd half"}
           </h2>
           <p className="text-xs text-slate-500">
-            Historical resolution is ~5 minutes, plotted by elapsed match time
+            {SNAPSHOTS_PER_HALF} snapshots per half, every 5 minutes from 0' to 45'
           </p>
         </div>
-        {fetching && chartRows.length === 0 ? (
-          <SnapshotFetchingStage fetchH1={fetchH1} fetchH2={fetchH2} />
-        ) : loading ? (
+        {loading && !fetching ? (
           <div className="py-16 text-center text-slate-400">Loading cached odds…</div>
-        ) : chartRows.length === 0 ? (
+        ) : fetching && snapshots.length === 0 ? (
+          <div className="py-16 text-center text-slate-400">Fetching snapshots…</div>
+        ) : snapshots.length === 0 ? (
           <div className="py-16 text-center text-slate-400">
-            {viewedHasOdds
-              ? "Select at least one Over line to plot."
-              : viewedRemaining === 0
-                ? `This bookmaker has no ${
-                    viewMarket === MARKETS.h1 ? "1st" : "2nd"
-                  }-half totals in the cached window.`
-                : `No cached ${
-                    viewMarket === MARKETS.h1 ? "1st" : "2nd"
-                  }-half odds for this bookmaker. Fetch snapshots to populate the chart.`}
+            {viewedRemaining === 0
+              ? `This bookmaker has no ${
+                  viewMarket === MARKETS.h1 ? "1st" : "2nd"
+                }-half totals in the cached window.`
+              : `No cached ${
+                  viewMarket === MARKETS.h1 ? "1st" : "2nd"
+                }-half odds for this bookmaker. Fetch snapshots to populate the chart.`}
+          </div>
+        ) : selectedLines.length === 0 ? (
+          <div className="py-16 text-center text-slate-400">
+            Select at least one Over line to plot.
           </div>
         ) : (
           <div className="h-[360px]">
@@ -526,8 +555,8 @@ export function MatchExplorer({
                   }
                   ticks={
                     viewMarket === MARKETS.h1
-                      ? [0, 15, 30, 45, 60]
-                      : [60, 75, 90, 105, 120]
+                      ? [0, 15, 30, 45]
+                      : [45, 60, 75, 90]
                   }
                   allowDataOverflow
                   stroke="#94a3b8"
@@ -535,12 +564,17 @@ export function MatchExplorer({
                 />
                 <YAxis stroke="#94a3b8" domain={["auto", "auto"]} />
                 <Tooltip
+                  filterNull={false}
                   contentStyle={{
                     background: "#0b1220",
                     border: "1px solid rgba(255,255,255,0.1)",
                     borderRadius: 12,
                   }}
                   labelFormatter={(value) => `Elapsed ${formatMinute(Number(value))}`}
+                  formatter={(value, name) => [
+                    value == null || value === "" ? "—" : Number(value).toFixed(2),
+                    name,
+                  ]}
                 />
                 <Legend />
                 {halfGoals.map((goal) => (
@@ -564,9 +598,9 @@ export function MatchExplorer({
                     dataKey={`O${line}`}
                     name={`Over ${line}`}
                     stroke={LINE_COLORS[index % LINE_COLORS.length]}
-                    dot={false}
+                    dot
+                    connectNulls={false}
                     strokeWidth={2}
-                    connectNulls
                   />
                 ))}
               </LineChart>
@@ -575,33 +609,44 @@ export function MatchExplorer({
         )}
         {settled.size > 0 && chartRows.length > 0 ? (
           <p className="mt-3 text-xs text-slate-500">
-            Over lines stop at the goal that settles them. Historical snapshots from this
-            book often keep stale prices after that.
+            After a line is settled, or the book stops offering it, the price shows as —.
           </p>
         ) : null}
       </div>
 
-      {tableRows.length > 0 ? (
+      {snapshots.length > 0 && selectedLines.length > 0 ? (
         <div className="overflow-x-auto rounded-2xl border border-white/10">
           <table className="min-w-full text-left text-sm">
             <thead className="bg-white/5 text-xs uppercase tracking-wider text-slate-400">
               <tr>
                 <th className="px-3 py-2 font-medium">Minute</th>
-                <th className="px-3 py-2 font-medium">Line</th>
-                <th className="px-3 py-2 font-medium">Over</th>
-                <th className="px-3 py-2 font-medium">Under</th>
+                {selectedLines.map((line) => (
+                  <th key={line} className="px-3 py-2 font-medium">
+                    Over {line}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
-              {tableRows.map((row) => (
+              {snapshots.map((snapshot) => (
                 <tr
-                  key={`${row.timestamp}-${row.point}`}
+                  key={snapshot.timestamp}
                   className="border-t border-white/5 font-mono text-slate-200"
                 >
-                  <td className="px-3 py-1.5">{formatMinute(row.elapsedMinutes)}</td>
-                  <td className="px-3 py-1.5">{row.point}</td>
-                  <td className="px-3 py-1.5 text-emerald-300">{formatOdds(row.overPrice)}</td>
-                  <td className="px-3 py-1.5 text-slate-400">{formatOdds(row.underPrice)}</td>
+                  <td className="px-3 py-1.5">{formatMinute(snapshot.elapsedMinutes)}</td>
+                  {selectedLines.map((line) => {
+                    const price = overAt(snapshot, line, settled);
+                    return (
+                      <td
+                        key={line}
+                        className={`px-3 py-1.5 ${
+                          price == null ? "text-slate-500" : "text-emerald-300"
+                        }`}
+                      >
+                        {formatOdds(price)}
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>

@@ -7,10 +7,8 @@ import {
 } from "./db";
 import {
   CREDIT_PER_MARKET,
-  H1_WINDOW_MINUTES,
-  MARKETS,
-  MATCH_WINDOW_MINUTES,
-  SNAPSHOT_INTERVAL_MINUTES,
+  SNAPSHOTS_PER_HALF,
+  snapshotMinutesForMarket,
   type MarketKey,
 } from "./leagues";
 import { getHistoricalEventOdds } from "./odds-api";
@@ -31,36 +29,6 @@ function addMinutes(iso: string, minutes: number): string {
   return toApiTimestamp(Date.parse(iso) + minutes * 60_000);
 }
 
-function elapsedMinutes(fromIso: string, toIso: string): number {
-  return (Date.parse(toIso) - Date.parse(fromIso)) / 60_000;
-}
-
-function advanceDate(
-  requestedDate: string,
-  timestamp: string,
-  nextTimestamp: string | null,
-): string {
-  const floor = Math.max(Date.parse(requestedDate), Date.parse(timestamp));
-  const next = nextTimestamp ? Date.parse(nextTimestamp) : Number.NaN;
-  if (Number.isFinite(next) && next > floor) {
-    return nextTimestamp as string;
-  }
-  return toApiTimestamp(floor + SNAPSHOT_INTERVAL_MINUTES * 60_000);
-}
-
-function marketForElapsed(minutes: number): MarketKey {
-  return minutes < H1_WINDOW_MINUTES ? MARKETS.h1 : MARKETS.h2;
-}
-
-function expectedSnapshotCount(market: MarketKey): number {
-  if (market === MARKETS.h1) {
-    return Math.ceil(H1_WINDOW_MINUTES / SNAPSHOT_INTERVAL_MINUTES);
-  }
-  return Math.ceil(
-    (MATCH_WINDOW_MINUTES - H1_WINDOW_MINUTES) / SNAPSHOT_INTERVAL_MINUTES,
-  );
-}
-
 export function estimateCredits(input: {
   eventId: string;
   bookmaker: string;
@@ -75,7 +43,7 @@ export function estimateCredits(input: {
   let alreadyCached = 0;
 
   for (const market of input.markets) {
-    const expected = expectedSnapshotCount(market);
+    const expected = SNAPSHOTS_PER_HALF;
     const cached = countCachedSnapshots(
       input.eventId,
       input.bookmaker,
@@ -127,8 +95,6 @@ export async function ingestMatchOdds(input: {
   const creditsBefore = getCredits();
   const usedBefore = creditsBefore.used ?? 0;
 
-  let date = input.commenceTime;
-  const end = addMinutes(input.commenceTime, MATCH_WINDOW_MINUTES);
   let snapshotsFetched = 0;
   let snapshotsCached = 0;
   let snapshotsSkipped = 0;
@@ -136,77 +102,71 @@ export async function ingestMatchOdds(input: {
   let lastRequestAt = 0;
   let steps = 0;
 
-  while (Date.parse(date) <= Date.parse(end) && steps < MAX_STEPS) {
-    steps += 1;
-    const elapsed = elapsedMinutes(input.commenceTime, date);
-    const market = marketForElapsed(elapsed);
-    if (!input.markets.includes(market)) {
-      date = addMinutes(date, SNAPSHOT_INTERVAL_MINUTES);
-      continue;
-    }
+  outer: for (const market of input.markets) {
+    for (const minute of snapshotMinutesForMarket(market)) {
+      steps += 1;
+      if (steps > MAX_STEPS) break outer;
 
-    const existing = findCoveringSnapshot(
-      input.eventId,
-      input.bookmaker,
-      market,
-      date,
-    );
-    if (existing) {
-      snapshotsSkipped += 1;
-      date = advanceDate(date, existing.timestamp, existing.nextTimestamp);
-      continue;
-    }
+      const date = addMinutes(input.commenceTime, minute);
+      const existing = findCoveringSnapshot(
+        input.eventId,
+        input.bookmaker,
+        market,
+        date,
+      );
+      if (existing) {
+        snapshotsSkipped += 1;
+        continue;
+      }
 
-    const wait = REQUEST_GAP_MS - (Date.now() - lastRequestAt);
-    if (wait > 0) await sleep(wait);
+      const wait = REQUEST_GAP_MS - (Date.now() - lastRequestAt);
+      if (wait > 0) await sleep(wait);
 
-    const response = await getHistoricalEventOdds({
-      sportKey: input.sportKey,
-      eventId: input.eventId,
-      date,
-      bookmaker: input.bookmaker,
-      markets: market,
-    });
-    lastRequestAt = Date.now();
-    snapshotsFetched += 1;
+      const response = await getHistoricalEventOdds({
+        sportKey: input.sportKey,
+        eventId: input.eventId,
+        date,
+        bookmaker: input.bookmaker,
+        markets: market,
+      });
+      lastRequestAt = Date.now();
+      snapshotsFetched += 1;
 
-    if (hasSnapshot(input.eventId, input.bookmaker, market, response.timestamp)) {
-      snapshotsSkipped += 1;
-      date = advanceDate(date, response.timestamp, response.next_timestamp);
-      continue;
-    }
+      if (hasSnapshot(input.eventId, input.bookmaker, market, response.timestamp)) {
+        snapshotsSkipped += 1;
+        continue;
+      }
 
-    const bookmaker = response.data.bookmakers.find(
-      (item) => item.key === input.bookmaker,
-    ) ?? response.data.bookmakers[0];
-    const marketData = bookmaker?.markets.find((item) => item.key === market);
+      const bookmaker = response.data.bookmakers.find(
+        (item) => item.key === input.bookmaker,
+      ) ?? response.data.bookmakers[0];
+      const marketData = bookmaker?.markets.find((item) => item.key === market);
 
-    if (!bookmaker || !marketData || marketData.outcomes.length === 0) {
-      emptyResponses += 1;
+      if (!bookmaker || !marketData || marketData.outcomes.length === 0) {
+        emptyResponses += 1;
+        insertSnapshot({
+          eventId: input.eventId,
+          bookmaker: input.bookmaker,
+          market,
+          timestamp: response.timestamp,
+          previousTimestamp: response.previous_timestamp,
+          nextTimestamp: response.next_timestamp,
+          outcomes: [],
+        });
+        continue;
+      }
+
       insertSnapshot({
         eventId: input.eventId,
-        bookmaker: input.bookmaker,
+        bookmaker: bookmaker.key,
         market,
         timestamp: response.timestamp,
         previousTimestamp: response.previous_timestamp,
         nextTimestamp: response.next_timestamp,
-        outcomes: [],
+        outcomes: groupOutcomes(marketData.outcomes),
       });
-      date = advanceDate(date, response.timestamp, response.next_timestamp);
-      continue;
+      snapshotsCached += 1;
     }
-
-    insertSnapshot({
-      eventId: input.eventId,
-      bookmaker: bookmaker.key,
-      market,
-      timestamp: response.timestamp,
-      previousTimestamp: response.previous_timestamp,
-      nextTimestamp: response.next_timestamp,
-      outcomes: groupOutcomes(marketData.outcomes),
-    });
-    snapshotsCached += 1;
-    date = advanceDate(date, response.timestamp, response.next_timestamp);
   }
 
   const credits = getCredits();

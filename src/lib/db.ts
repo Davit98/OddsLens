@@ -537,13 +537,13 @@ export function getOddsSeries(input: {
     .prepare(
       `SELECT s.timestamp, o.point, o.over_price, o.under_price
        FROM snapshots s
-       JOIN odds o ON o.snapshot_id = s.id
+       LEFT JOIN odds o ON o.snapshot_id = s.id
        WHERE s.event_id = ? AND s.bookmaker = ? AND s.market = ?
        ORDER BY s.timestamp ASC, o.point ASC`,
     )
     .all(input.eventId, input.bookmaker, input.market) as {
     timestamp: string;
-    point: number;
+    point: number | null;
     over_price: number | null;
     under_price: number | null;
   }[];

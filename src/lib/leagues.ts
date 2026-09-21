@@ -64,10 +64,33 @@ export const MARKETS = {
 
 export type MarketKey = (typeof MARKETS)[keyof typeof MARKETS];
 
-export const H1_WINDOW_MINUTES = 60;
-export const MATCH_WINDOW_MINUTES = 120;
+export const HALF_LENGTH_MINUTES = 45;
 export const SNAPSHOT_INTERVAL_MINUTES = 5;
+export const SNAPSHOTS_PER_HALF =
+  HALF_LENGTH_MINUTES / SNAPSHOT_INTERVAL_MINUTES + 1;
+export const H1_WINDOW_MINUTES = HALF_LENGTH_MINUTES;
+export const MATCH_WINDOW_MINUTES = HALF_LENGTH_MINUTES * 2;
 export const CREDIT_PER_MARKET = 10;
+
+export function snapshotMinutesForMarket(market: MarketKey): number[] {
+  const start = market === MARKETS.h1 ? 0 : HALF_LENGTH_MINUTES;
+  return Array.from(
+    { length: SNAPSHOTS_PER_HALF },
+    (_, index) => start + index * SNAPSHOT_INTERVAL_MINUTES,
+  );
+}
+
+export function walkSnapshotMinutes(fetchH1: boolean, fetchH2: boolean): number[] {
+  const minutes = new Set<number>();
+  if (fetchH1) {
+    for (const minute of snapshotMinutesForMarket(MARKETS.h1)) minutes.add(minute);
+  }
+  if (fetchH2) {
+    for (const minute of snapshotMinutesForMarket(MARKETS.h2)) minutes.add(minute);
+  }
+  return [...minutes].sort((a, b) => a - b);
+}
+
 export const DEFAULT_LINES = [0.5, 1.5, 2.5, 3.5];
 
 export const LOOKBACK_OPTIONS = [

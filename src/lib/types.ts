@@ -22,7 +22,7 @@ export type MatchRecord = {
 export type OddsPoint = {
   timestamp: string;
   elapsedMinutes: number;
-  point: number;
+  point: number | null;
   overPrice: number | null;
   underPrice: number | null;
 };
