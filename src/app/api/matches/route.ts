@@ -36,6 +36,15 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Unknown league" }, { status: 400 });
   }
 
+  if (params.get("preview") === "1") {
+    return NextResponse.json({
+      lookback,
+      lookbackDays: days,
+      estimatedHistoryCredits: estimateHistoryCredits(sportKeys, days),
+      credits: getCredits(),
+    });
+  }
+
   try {
     const scoresFetched: string[] = [];
     let historyDaysFetched = 0;

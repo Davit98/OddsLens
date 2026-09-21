@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { LEAGUES, LOOKBACK_OPTIONS, leagueTitle, type LeagueKey, type LookbackKey } from "@/lib/leagues";
 import { formatKickoff, matchStatus } from "@/lib/format";
 import type { Credits, MatchRecord } from "@/lib/types";
+import { HistoryLoadingCard } from "./HistoryLoadingCard";
 import { useCredits } from "./CreditsProvider";
 
 type LeagueFilter = "all" | LeagueKey;
@@ -15,13 +16,29 @@ export function MatchList() {
   const [lookback, setLookback] = useState<LookbackKey>("3");
   const [matches, setMatches] = useState<MatchRecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const [progress, setProgress] = useState(8);
+  const [pendingDays, setPendingDays] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [scoresNote, setScoresNote] = useState<string | null>(null);
 
   const load = useCallback(async (nextLeague: LeagueFilter, nextLookback: LookbackKey) => {
     setLoading(true);
     setError(null);
+    setProgress(8);
+    setPendingDays(0);
     try {
+      let pending = 0;
+      if (nextLookback !== "3") {
+        const previewResponse = await fetch(
+          `/api/matches?league=${nextLeague}&lookback=${nextLookback}&preview=1`,
+        );
+        const preview = (await previewResponse.json()) as {
+          estimatedHistoryCredits?: number;
+        };
+        pending = preview.estimatedHistoryCredits ?? 0;
+        setPendingDays(pending);
+      }
+
       const response = await fetch(
         `/api/matches?league=${nextLeague}&lookback=${nextLookback}`,
       );
@@ -37,6 +54,7 @@ export function MatchList() {
       if (!response.ok) {
         throw new Error(data.error ?? "Failed to load matches");
       }
+      setProgress(100);
       setMatches(data.matches ?? []);
       if (data.credits) setCredits(data.credits);
       const notes: string[] = [];
@@ -61,6 +79,7 @@ export function MatchList() {
         notes.push("Completed matches loaded from today's cache. Upcoming fixtures are free.");
       }
       setScoresNote(notes.join(" "));
+      await new Promise((resolve) => setTimeout(resolve, 280));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load matches");
     } finally {
@@ -71,6 +90,20 @@ export function MatchList() {
   useEffect(() => {
     void load(league, lookback);
   }, [league, lookback, load]);
+
+  useEffect(() => {
+    if (!loading) return;
+    const duration = Math.max(pendingDays * 450, 1400);
+    const started = Date.now();
+    const timer = window.setInterval(() => {
+      const t = Math.min(1, (Date.now() - started) / duration);
+      const eased = 1 - (1 - t) ** 3;
+      setProgress((current) =>
+        current >= 100 ? 100 : Math.min(92, 8 + eased * 84),
+      );
+    }, 80);
+    return () => window.clearInterval(timer);
+  }, [loading, pendingDays]);
 
   const grouped = useMemo(() => {
     const byLeague = new Map<string, MatchRecord[]>();
@@ -143,11 +176,11 @@ export function MatchList() {
       </div>
 
       {loading ? (
-        <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-10 text-center text-slate-400">
-          {lookback === "3"
-            ? "Loading fixtures…"
-            : "Loading extra history… week and longer use 1 credit per league per uncached day."}
-        </div>
+        <HistoryLoadingCard
+          extraHistory={lookback !== "3"}
+          pendingDays={pendingDays}
+          progress={progress}
+        />
       ) : error ? (
         <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-6 text-sm text-rose-100">
           {error}
