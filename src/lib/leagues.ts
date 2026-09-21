@@ -38,6 +38,7 @@ export const LEAGUE_BY_KEY = Object.fromEntries(
 ) as Record<LeagueKey, (typeof LEAGUES)[number]>;
 
 export const BOOKMAKERS = [
+  { key: "leovegas", title: "LeoVegas", region: "UK" },
   { key: "pinnacle", title: "Pinnacle", region: "EU" },
   { key: "bet365", title: "bet365", region: "UK" },
   { key: "onexbet", title: "1xBet", region: "EU" },
@@ -55,7 +56,7 @@ export const BOOKMAKERS = [
   { key: "fanduel", title: "FanDuel", region: "US" },
 ] as const;
 
-export const DEFAULT_BOOKMAKER = "pinnacle";
+export const DEFAULT_BOOKMAKER = "leovegas";
 
 export const MARKETS = {
   h1: "alternate_totals_h1",

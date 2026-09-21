@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCredits, getMatch, getMatchEspn, getOddsSeries } from "@/lib/db";
 import { estimateCredits, ingestMatchOdds } from "@/lib/ingest";
-import { MARKETS, type MarketKey } from "@/lib/leagues";
+import { DEFAULT_BOOKMAKER, MARKETS, type MarketKey } from "@/lib/leagues";
 import { ensureMatchDetails } from "@/lib/match-details";
 import { OddsApiError } from "@/lib/odds-api";
 import type { CreditEstimate, HalfEnds } from "@/lib/types";
@@ -63,7 +63,7 @@ export async function GET(
   }
 
   const { searchParams } = new URL(request.url);
-  const bookmaker = searchParams.get("bookmaker") ?? "pinnacle";
+  const bookmaker = searchParams.get("bookmaker") ?? DEFAULT_BOOKMAKER;
   const markets = parseMarkets(searchParams.get("markets"));
   const { goals, halfEnds } = await ensureMatchDetails(match);
   const fresh = getMatch(id) ?? match;
@@ -100,7 +100,7 @@ export async function POST(
     bookmaker?: string;
     markets?: string[];
   };
-  const bookmaker = body.bookmaker ?? "pinnacle";
+  const bookmaker = body.bookmaker ?? DEFAULT_BOOKMAKER;
   const markets = parseMarkets(body.markets?.join(",") ?? null);
 
   try {
