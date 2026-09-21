@@ -19,6 +19,11 @@ export function formatOdds(value: number | null): string {
   return value.toFixed(2);
 }
 
+export function formatScore(home: number | null, away: number | null): string | null {
+  if (home === null || away === null) return null;
+  return `${home}–${away}`;
+}
+
 export function matchStatus(commenceTime: string, completed: boolean): "upcoming" | "live" | "ft" {
   if (completed) return "ft";
   const start = Date.parse(commenceTime);

@@ -2,12 +2,15 @@ import { NextResponse } from "next/server";
 import { getCredits, getMatch, getOddsSeries } from "@/lib/db";
 import { estimateCredits, ingestMatchOdds } from "@/lib/ingest";
 import { MARKETS, type MarketKey } from "@/lib/leagues";
+import { ensureMatchDetails } from "@/lib/match-details";
 import { OddsApiError } from "@/lib/odds-api";
+import type { CreditEstimate } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 const MARKET_VALUES = new Set<string>(Object.values(MARKETS));
+const CHART_MARKETS: MarketKey[] = [MARKETS.h1, MARKETS.h2];
 
 function parseMarkets(value: string | null): MarketKey[] {
   const raw = (value ?? `${MARKETS.h1},${MARKETS.h2}`)
@@ -15,6 +18,32 @@ function parseMarkets(value: string | null): MarketKey[] {
     .map((item) => item.trim())
     .filter((item) => MARKET_VALUES.has(item)) as MarketKey[];
   return raw.length > 0 ? [...new Set(raw)] : [MARKETS.h1, MARKETS.h2];
+}
+
+function seriesFor(id: string, bookmaker: string, commenceTime: string) {
+  return CHART_MARKETS.flatMap((market) =>
+    getOddsSeries({
+      eventId: id,
+      bookmaker,
+      market,
+      commenceTime,
+    }).map((point) => ({ ...point, market })),
+  );
+}
+
+function marketEstimates(eventId: string, bookmaker: string): Record<MarketKey, CreditEstimate> {
+  return {
+    [MARKETS.h1]: estimateCredits({
+      eventId,
+      bookmaker,
+      markets: [MARKETS.h1],
+    }),
+    [MARKETS.h2]: estimateCredits({
+      eventId,
+      bookmaker,
+      markets: [MARKETS.h2],
+    }),
+  };
 }
 
 export async function GET(
@@ -30,21 +59,17 @@ export async function GET(
   const { searchParams } = new URL(request.url);
   const bookmaker = searchParams.get("bookmaker") ?? "pinnacle";
   const markets = parseMarkets(searchParams.get("markets"));
-  const series = markets.flatMap((market) =>
-    getOddsSeries({
-      eventId: id,
-      bookmaker,
-      market,
-      commenceTime: match.commenceTime,
-    }).map((point) => ({ ...point, market })),
-  );
+  const goals = await ensureMatchDetails(match);
+  const fresh = getMatch(id) ?? match;
 
   return NextResponse.json({
-    match,
+    match: fresh,
     bookmaker,
     markets,
-    series,
+    series: seriesFor(id, bookmaker, fresh.commenceTime),
     estimate: estimateCredits({ eventId: id, bookmaker, markets }),
+    estimates: marketEstimates(id, bookmaker),
+    goals,
     credits: getCredits(),
   });
 }
@@ -74,19 +99,14 @@ export async function POST(
       bookmaker,
       markets,
     });
-    const series = markets.flatMap((market) =>
-      getOddsSeries({
-        eventId: id,
-        bookmaker,
-        market,
-        commenceTime: match.commenceTime,
-      }).map((point) => ({ ...point, market })),
-    );
+    const goals = await ensureMatchDetails(match);
     return NextResponse.json({
       result,
-      series,
+      series: seriesFor(id, bookmaker, match.commenceTime),
       match: getMatch(id),
       estimate: estimateCredits({ eventId: id, bookmaker, markets }),
+      estimates: marketEstimates(id, bookmaker),
+      goals,
     });
   } catch (error) {
     if (error instanceof OddsApiError) {

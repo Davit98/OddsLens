@@ -69,11 +69,11 @@ export function MatchList() {
         notes.push(
           `Pulled ${data.historyDaysFetched} extra fixture-day snapshot${
             data.historyDaysFetched === 1 ? "" : "s"
-          } (1 credit each, cached). Scores are only available for the last 3 days.`,
+          } (1 credit each, cached). Final scores are filled from ESPN for older matches.`,
         );
       } else if ((data.lookbackDays ?? 3) > 3) {
         notes.push(
-          "Older fixtures loaded from cache. The Odds API only returns scores for the last 3 days.",
+          "Older fixtures loaded from cache. Final scores are backfilled from ESPN.",
         );
       } else {
         notes.push("Completed matches loaded from today's cache. Upcoming fixtures are free.");

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
-import type { Credits, MatchRecord, OddsPoint, SnapshotRow } from "./types";
+import type { Credits, GoalEvent, MatchRecord, OddsPoint, SnapshotRow } from "./types";
 
 const DB_PATH = path.join(process.cwd(), "data", "oddslens.db");
 
@@ -63,6 +63,36 @@ function createDb(): Database.Database {
       day TEXT NOT NULL,
       PRIMARY KEY (sport_key, day)
     );
+
+    CREATE TABLE IF NOT EXISTS goals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id TEXT NOT NULL,
+      period INTEGER NOT NULL,
+      display_minute TEXT NOT NULL,
+      elapsed_minutes REAL NOT NULL,
+      wallclock TEXT,
+      team TEXT NOT NULL,
+      scorer TEXT,
+      assist TEXT,
+      home_score INTEGER NOT NULL,
+      away_score INTEGER NOT NULL,
+      own_goal INTEGER NOT NULL DEFAULT 0,
+      penalty INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(event_id, display_minute, team, scorer)
+    );
+
+    CREATE TABLE IF NOT EXISTS match_espn (
+      event_id TEXT PRIMARY KEY,
+      espn_event_id TEXT NOT NULL,
+      espn_league TEXT NOT NULL,
+      goals_fetched INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS espn_days (
+      sport_key TEXT NOT NULL,
+      day TEXT NOT NULL,
+      PRIMARY KEY (sport_key, day)
+    );
   `);
   return db;
 }
@@ -74,6 +104,33 @@ export function getDb(): Database.Database {
   }
   g.__oddslensDb.exec(`
     CREATE TABLE IF NOT EXISTS event_days (
+      sport_key TEXT NOT NULL,
+      day TEXT NOT NULL,
+      PRIMARY KEY (sport_key, day)
+    );
+    CREATE TABLE IF NOT EXISTS goals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id TEXT NOT NULL,
+      period INTEGER NOT NULL,
+      display_minute TEXT NOT NULL,
+      elapsed_minutes REAL NOT NULL,
+      wallclock TEXT,
+      team TEXT NOT NULL,
+      scorer TEXT,
+      assist TEXT,
+      home_score INTEGER NOT NULL,
+      away_score INTEGER NOT NULL,
+      own_goal INTEGER NOT NULL DEFAULT 0,
+      penalty INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(event_id, display_minute, team, scorer)
+    );
+    CREATE TABLE IF NOT EXISTS match_espn (
+      event_id TEXT PRIMARY KEY,
+      espn_event_id TEXT NOT NULL,
+      espn_league TEXT NOT NULL,
+      goals_fetched INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS espn_days (
       sport_key TEXT NOT NULL,
       day TEXT NOT NULL,
       PRIMARY KEY (sport_key, day)
@@ -247,6 +304,116 @@ export function countMissingEventDays(sportKey: string, days: string[]): number 
   return days.filter((day) => !hasEventDay(sportKey, day)).length;
 }
 
+export function hasEspnDay(sportKey: string, day: string): boolean {
+  const row = getDb()
+    .prepare("SELECT 1 AS ok FROM espn_days WHERE sport_key = ? AND day = ?")
+    .get(sportKey, day) as { ok: number } | undefined;
+  return Boolean(row);
+}
+
+export function markEspnDay(sportKey: string, day: string): void {
+  getDb()
+    .prepare(
+      `INSERT INTO espn_days (sport_key, day) VALUES (?, ?)
+       ON CONFLICT(sport_key, day) DO NOTHING`,
+    )
+    .run(sportKey, day);
+}
+
+export function getMatchEspn(eventId: string): {
+  espnEventId: string;
+  espnLeague: string;
+  goalsFetched: boolean;
+} | null {
+  const row = getDb()
+    .prepare(
+      "SELECT espn_event_id, espn_league, goals_fetched FROM match_espn WHERE event_id = ?",
+    )
+    .get(eventId) as
+    | { espn_event_id: string; espn_league: string; goals_fetched: number }
+    | undefined;
+  if (!row) return null;
+  return {
+    espnEventId: row.espn_event_id,
+    espnLeague: row.espn_league,
+    goalsFetched: Boolean(row.goals_fetched),
+  };
+}
+
+export function setMatchEspn(input: {
+  eventId: string;
+  espnEventId: string;
+  espnLeague: string;
+  goalsFetched?: boolean;
+}): void {
+  getDb()
+    .prepare(
+      `INSERT INTO match_espn (event_id, espn_event_id, espn_league, goals_fetched)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(event_id) DO UPDATE SET
+         espn_event_id = excluded.espn_event_id,
+         espn_league = excluded.espn_league,
+         goals_fetched = MAX(match_espn.goals_fetched, excluded.goals_fetched)`,
+    )
+    .run(
+      input.eventId,
+      input.espnEventId,
+      input.espnLeague,
+      input.goalsFetched ? 1 : 0,
+    );
+}
+
+export function getGoals(eventId: string): GoalEvent[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT period, display_minute, elapsed_minutes, wallclock, team, scorer,
+              assist, home_score, away_score, own_goal, penalty
+       FROM goals WHERE event_id = ?
+       ORDER BY elapsed_minutes ASC, id ASC`,
+    )
+    .all(eventId) as DbGoal[];
+  return rows.map(mapGoal);
+}
+
+export function replaceGoals(eventId: string, goals: GoalEvent[]): void {
+  const db = getDb();
+  const insert = db.prepare(
+    `INSERT INTO goals (
+      event_id, period, display_minute, elapsed_minutes, wallclock, team,
+      scorer, assist, home_score, away_score, own_goal, penalty
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(event_id, display_minute, team, scorer) DO UPDATE SET
+      period = excluded.period,
+      elapsed_minutes = excluded.elapsed_minutes,
+      wallclock = excluded.wallclock,
+      assist = excluded.assist,
+      home_score = excluded.home_score,
+      away_score = excluded.away_score,
+      own_goal = excluded.own_goal,
+      penalty = excluded.penalty`,
+  );
+  const tx = db.transaction(() => {
+    db.prepare("DELETE FROM goals WHERE event_id = ?").run(eventId);
+    for (const goal of goals) {
+      insert.run(
+        eventId,
+        goal.period,
+        goal.displayMinute,
+        goal.elapsedMinutes,
+        goal.wallclock,
+        goal.team,
+        goal.scorer ?? "",
+        goal.assist,
+        goal.homeScore,
+        goal.awayScore,
+        goal.ownGoal ? 1 : 0,
+        goal.penalty ? 1 : 0,
+      );
+    }
+  });
+  tx();
+}
+
 export function findCoveringSnapshot(
   eventId: string,
   bookmaker: string,
@@ -414,6 +581,20 @@ type DbSnapshot = {
   next_timestamp: string | null;
 };
 
+type DbGoal = {
+  period: number;
+  display_minute: string;
+  elapsed_minutes: number;
+  wallclock: string | null;
+  team: string;
+  scorer: string | null;
+  assist: string | null;
+  home_score: number;
+  away_score: number;
+  own_goal: number;
+  penalty: number;
+};
+
 function mapMatch(row: DbMatch): MatchRecord {
   return {
     id: row.id,
@@ -439,6 +620,22 @@ function mapSnapshot(row: DbSnapshot): SnapshotRow {
     timestamp: row.timestamp,
     previousTimestamp: row.previous_timestamp,
     nextTimestamp: row.next_timestamp,
+  };
+}
+
+function mapGoal(row: DbGoal): GoalEvent {
+  return {
+    period: row.period === 2 ? 2 : 1,
+    displayMinute: row.display_minute,
+    elapsedMinutes: row.elapsed_minutes,
+    wallclock: row.wallclock,
+    team: row.team,
+    scorer: row.scorer || null,
+    assist: row.assist,
+    homeScore: row.home_score,
+    awayScore: row.away_score,
+    ownGoal: Boolean(row.own_goal),
+    penalty: Boolean(row.penalty),
   };
 }
 

@@ -81,6 +81,14 @@ export type LookbackKey = (typeof LOOKBACK_OPTIONS)[number]["key"];
 export const DEFAULT_LOOKBACK: LookbackKey = "3";
 export const SCORES_LOOKBACK_DAYS = 3;
 
+export const ESPN_LEAGUES: Record<string, string> = {
+  soccer_epl: "eng.1",
+  soccer_spain_la_liga: "esp.1",
+  soccer_germany_bundesliga: "ger.1",
+  soccer_italy_serie_a: "ita.1",
+  soccer_france_ligue_one: "fra.1",
+};
+
 export function parseLookback(value: string | null): LookbackKey {
   return LOOKBACK_OPTIONS.some((item) => item.key === value)
     ? (value as LookbackKey)

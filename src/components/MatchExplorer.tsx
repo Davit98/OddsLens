@@ -7,6 +7,7 @@ import {
   Legend,
   Line,
   LineChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -14,7 +15,7 @@ import {
 } from "recharts";
 import { useCredits } from "./CreditsProvider";
 import { SnapshotFetchingBanner, SnapshotFetchingStage } from "./SnapshotFetching";
-import { formatKickoff, formatMinute, formatOdds } from "@/lib/format";
+import { formatKickoff, formatMinute, formatOdds, formatScore } from "@/lib/format";
 import {
   BOOKMAKERS,
   DEFAULT_BOOKMAKER,
@@ -25,7 +26,14 @@ import {
   leagueTitle,
   type MarketKey,
 } from "@/lib/leagues";
-import type { Credits, IngestResult, MatchRecord, OddsPoint } from "@/lib/types";
+import type {
+  CreditEstimate,
+  Credits,
+  GoalEvent,
+  IngestResult,
+  MatchRecord,
+  OddsPoint,
+} from "@/lib/types";
 
 type SeriesPoint = OddsPoint & { market: string };
 
@@ -34,12 +42,9 @@ type OddsResponse = {
   bookmaker: string;
   markets: MarketKey[];
   series: SeriesPoint[];
-  estimate: {
-    estimatedCredits: number;
-    estimatedSnapshots: number;
-    alreadyCached: number;
-    remainingSnapshots: number;
-  };
+  estimate: CreditEstimate;
+  estimates?: Record<MarketKey, CreditEstimate>;
+  goals?: GoalEvent[];
   credits?: Credits;
   result?: IngestResult;
   error?: string;
@@ -56,15 +61,68 @@ const LINE_COLORS = [
   "#f97316",
 ];
 
-export function MatchExplorer({ match }: { match: MatchRecord }) {
+const EMPTY_ESTIMATE: CreditEstimate = {
+  estimatedCredits: 0,
+  estimatedSnapshots: 0,
+  alreadyCached: 0,
+  remainingSnapshots: 0,
+};
+
+function combineEstimates(parts: CreditEstimate[]): CreditEstimate {
+  return parts.reduce(
+    (acc, part) => ({
+      estimatedCredits: acc.estimatedCredits + part.estimatedCredits,
+      estimatedSnapshots: acc.estimatedSnapshots + part.estimatedSnapshots,
+      alreadyCached: acc.alreadyCached + part.alreadyCached,
+      remainingSnapshots: acc.remainingSnapshots + part.remainingSnapshots,
+    }),
+    EMPTY_ESTIMATE,
+  );
+}
+
+function lastName(name: string | null): string | null {
+  if (!name) return null;
+  const parts = name.trim().split(/\s+/);
+  return parts[parts.length - 1] ?? name;
+}
+
+function settleTimes(goals: GoalEvent[], market: MarketKey, lines: number[]) {
+  const halfGoals = goals
+    .filter((goal) => (market === MARKETS.h1 ? goal.period === 1 : goal.period === 2))
+    .sort((a, b) => a.elapsedMinutes - b.elapsedMinutes);
+  const settled = new Map<number, number>();
+  for (const line of lines) {
+    let count = 0;
+    for (const goal of halfGoals) {
+      count += 1;
+      if (count > line) {
+        settled.set(line, goal.elapsedMinutes);
+        break;
+      }
+    }
+  }
+  return { halfGoals, settled };
+}
+
+export function MatchExplorer({
+  match,
+  initialGoals = [],
+}: {
+  match: MatchRecord;
+  initialGoals?: GoalEvent[];
+}) {
   const { credits, setCredits } = useCredits();
+  const [currentMatch, setCurrentMatch] = useState(match);
   const [bookmaker, setBookmaker] = useState(DEFAULT_BOOKMAKER);
   const [fetchH1, setFetchH1] = useState(true);
   const [fetchH2, setFetchH2] = useState(true);
   const [viewMarket, setViewMarket] = useState<MarketKey>(MARKETS.h1);
   const [selectedLines, setSelectedLines] = useState<number[]>(DEFAULT_LINES);
   const [series, setSeries] = useState<SeriesPoint[]>([]);
-  const [estimate, setEstimate] = useState<OddsResponse["estimate"] | null>(null);
+  const [estimates, setEstimates] = useState<Record<MarketKey, CreditEstimate> | null>(
+    null,
+  );
+  const [goals, setGoals] = useState<GoalEvent[]>(initialGoals);
   const [loading, setLoading] = useState(true);
   const [fetching, setFetching] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -74,16 +132,38 @@ export function MatchExplorer({ match }: { match: MatchRecord }) {
     const markets: MarketKey[] = [];
     if (fetchH1) markets.push(MARKETS.h1);
     if (fetchH2) markets.push(MARKETS.h2);
-    return markets.length > 0 ? markets : [MARKETS.h1];
+    return markets;
   }, [fetchH1, fetchH2]);
+
+  const estimate = useMemo(() => {
+    if (!estimates) return null;
+    const parts: CreditEstimate[] = [];
+    if (fetchH1) parts.push(estimates[MARKETS.h1]);
+    if (fetchH2) parts.push(estimates[MARKETS.h2]);
+    return combineEstimates(parts);
+  }, [estimates, fetchH1, fetchH2]);
+
+  const applyOddsPayload = useCallback(
+    (data: OddsResponse) => {
+      setSeries(data.series);
+      if (data.estimates) setEstimates(data.estimates);
+      else if (data.estimate) {
+        setEstimates({
+          [MARKETS.h1]: data.estimate,
+          [MARKETS.h2]: EMPTY_ESTIMATE,
+        });
+      }
+      if (data.match) setCurrentMatch(data.match);
+      if (data.goals) setGoals(data.goals);
+      if (data.credits) setCredits(data.credits);
+    },
+    [setCredits],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
-    const params = new URLSearchParams({
-      bookmaker,
-      markets: selectedMarkets.join(","),
-    });
+    const params = new URLSearchParams({ bookmaker });
     const response = await fetch(`/api/matches/${match.id}/odds?${params}`);
     const data = (await response.json()) as OddsResponse;
     if (!response.ok) {
@@ -91,15 +171,18 @@ export function MatchExplorer({ match }: { match: MatchRecord }) {
       setLoading(false);
       return;
     }
-    setSeries(data.series);
-    setEstimate(data.estimate);
-    if (data.credits) setCredits(data.credits);
+    applyOddsPayload(data);
     setLoading(false);
-  }, [bookmaker, match.id, selectedMarkets, setCredits]);
+  }, [applyOddsPayload, bookmaker, match.id]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    setCurrentMatch(match);
+    setGoals(initialGoals);
+  }, [initialGoals, match]);
 
   const availableLines = useMemo(() => {
     const points = new Set(
@@ -117,31 +200,53 @@ export function MatchExplorer({ match }: { match: MatchRecord }) {
     });
   }, [availableLines]);
 
+  const { halfGoals, settled } = useMemo(
+    () => settleTimes(goals, viewMarket, selectedLines),
+    [goals, selectedLines, viewMarket],
+  );
+
   const chartRows = useMemo(() => {
     const byMinute = new Map<number, Record<string, number | string>>();
+    const lastPrice = new Map<number, number>();
     for (const row of series) {
       if (row.market !== viewMarket) continue;
       if (!selectedLines.includes(row.point) || row.overPrice === null) continue;
+      const settledAt = settled.get(row.point);
+      if (settledAt !== undefined && row.elapsedMinutes > settledAt) continue;
       const minute = Math.round(row.elapsedMinutes * 10) / 10;
       const current = byMinute.get(minute) ?? { minute };
       current[`O${row.point}`] = row.overPrice;
+      byMinute.set(minute, current);
+      lastPrice.set(row.point, row.overPrice);
+    }
+    for (const [line, at] of settled) {
+      const price = lastPrice.get(line);
+      if (price === undefined) continue;
+      const minute = Math.round(at * 10) / 10;
+      const current = byMinute.get(minute) ?? { minute };
+      current[`O${line}`] = price;
       byMinute.set(minute, current);
     }
     return [...byMinute.values()].sort(
       (a, b) => Number(a.minute) - Number(b.minute),
     );
-  }, [selectedLines, series, viewMarket]);
+  }, [selectedLines, series, settled, viewMarket]);
 
   const tableRows = useMemo(
     () =>
       series
         .filter((row) => row.market === viewMarket)
         .filter((row) => selectedLines.includes(row.point))
+        .filter((row) => {
+          const settledAt = settled.get(row.point);
+          return settledAt === undefined || row.elapsedMinutes <= settledAt;
+        })
         .sort((a, b) => a.elapsedMinutes - b.elapsedMinutes || a.point - b.point),
-    [selectedLines, series, viewMarket],
+    [selectedLines, series, settled, viewMarket],
   );
 
   async function handleFetch() {
+    if (selectedMarkets.length === 0) return;
     setFetching(true);
     setError(null);
     setMessage("Walking 5-minute snapshots. This can take up to a minute.");
@@ -155,8 +260,7 @@ export function MatchExplorer({ match }: { match: MatchRecord }) {
       if (!response.ok) {
         throw new Error(data.error ?? "Fetch failed");
       }
-      setSeries(data.series);
-      setEstimate(data.estimate);
+      applyOddsPayload(data);
       if (data.result) {
         setMessage(data.result.message);
         setCredits(data.result.credits);
@@ -174,6 +278,12 @@ export function MatchExplorer({ match }: { match: MatchRecord }) {
       ? credits.remaining - estimate.estimatedCredits
       : null;
 
+  const ftScore = formatScore(currentMatch.homeScore, currentMatch.awayScore);
+  const viewedRemaining = estimates?.[viewMarket]?.remainingSnapshots ?? 0;
+  const viewedHasOdds = series.some(
+    (row) => row.market === viewMarket && row.overPrice !== null,
+  );
+
   return (
     <div className="space-y-6">
       <Link href="/" className="mb-1 inline-block text-sm text-slate-400 hover:text-emerald-300">
@@ -181,17 +291,36 @@ export function MatchExplorer({ match }: { match: MatchRecord }) {
       </Link>
       <div>
         <p className="text-xs uppercase tracking-[0.18em] text-slate-500">
-          {leagueTitle(match.sportKey)}
+          {leagueTitle(currentMatch.sportKey)}
         </p>
         <h1 className="mt-1 text-2xl font-semibold text-white">
-          {match.homeTeam} <span className="text-slate-500">vs</span> {match.awayTeam}
+          {currentMatch.homeTeam}{" "}
+          <span className="text-slate-500">vs</span> {currentMatch.awayTeam}
         </h1>
         <p className="mt-1 text-sm text-slate-400">
-          Kickoff {formatKickoff(match.commenceTime)}
-          {match.homeScore !== null && match.awayScore !== null
-            ? ` · FT ${match.homeScore}–${match.awayScore}`
-            : ""}
+          Kickoff {formatKickoff(currentMatch.commenceTime)}
+          {ftScore ? ` · FT ${ftScore}` : ""}
         </p>
+        {goals.length > 0 ? (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {goals.map((goal) => (
+              <span
+                key={`${goal.wallclock}-${goal.scorer}-${goal.displayMinute}`}
+                className="inline-flex items-center gap-2 whitespace-nowrap rounded-full border border-rose-400/20 bg-rose-400/10 px-2.5 py-1 text-xs text-rose-100"
+              >
+                <span className="font-mono text-rose-200">{goal.displayMinute}</span>
+                <span>
+                  {goal.scorer ?? goal.team}
+                  {goal.ownGoal ? " (OG)" : ""}
+                  {goal.penalty ? " (P)" : ""}
+                </span>
+                <span className="font-mono text-slate-400">
+                  {goal.homeScore}–{goal.awayScore}
+                </span>
+              </span>
+            ))}
+          </div>
+        ) : null}
       </div>
 
       <div className="grid gap-4 rounded-2xl border border-white/10 bg-white/5 p-4 lg:grid-cols-[1fr_auto]">
@@ -257,11 +386,16 @@ export function MatchExplorer({ match }: { match: MatchRecord }) {
           <button
             type="button"
             onClick={() => void handleFetch()}
-            disabled={fetching || (estimate?.remainingSnapshots ?? 1) === 0}
+            disabled={
+              fetching ||
+              selectedMarkets.length === 0 ||
+              (estimate?.remainingSnapshots ?? 1) === 0
+            }
             className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
               fetching
                 ? "bg-emerald-400 text-slate-950"
-                : (estimate?.remainingSnapshots ?? 1) === 0
+                : selectedMarkets.length === 0 ||
+                    (estimate?.remainingSnapshots ?? 1) === 0
                   ? "cursor-not-allowed bg-slate-600 text-slate-300"
                   : "bg-emerald-400 text-slate-950 hover:bg-emerald-300"
             }`}
@@ -271,6 +405,8 @@ export function MatchExplorer({ match }: { match: MatchRecord }) {
                 <span className="fetch-spinner h-3.5 w-3.5 rounded-full border-2 border-slate-950/25 border-t-slate-950" />
                 Fetching…
               </span>
+            ) : selectedMarkets.length === 0 ? (
+              "Select a half"
             ) : estimate?.remainingSnapshots === 0 ? (
               "Already cached"
             ) : (
@@ -351,7 +487,7 @@ export function MatchExplorer({ match }: { match: MatchRecord }) {
       ) : null}
 
       <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
-        <div className="mb-3 flex items-center justify-between">
+        <div className="mb-3 flex items-center justify-between gap-3">
           <h2 className="text-sm font-semibold text-white">
             Over odds · {viewMarket === MARKETS.h1 ? "1st half" : "2nd half"}
           </h2>
@@ -365,14 +501,20 @@ export function MatchExplorer({ match }: { match: MatchRecord }) {
           <div className="py-16 text-center text-slate-400">Loading cached odds…</div>
         ) : chartRows.length === 0 ? (
           <div className="py-16 text-center text-slate-400">
-            {estimate?.remainingSnapshots === 0
-              ? "This bookmaker has no half-total odds in the cached window."
-              : "No cached odds for this bookmaker and half. Fetch snapshots to populate the chart."}
+            {viewedHasOdds
+              ? "Select at least one Over line to plot."
+              : viewedRemaining === 0
+                ? `This bookmaker has no ${
+                    viewMarket === MARKETS.h1 ? "1st" : "2nd"
+                  }-half totals in the cached window.`
+                : `No cached ${
+                    viewMarket === MARKETS.h1 ? "1st" : "2nd"
+                  }-half odds for this bookmaker. Fetch snapshots to populate the chart.`}
           </div>
         ) : (
           <div className="h-[360px]">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartRows} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
+              <LineChart data={chartRows} margin={{ top: 24, right: 16, left: 0, bottom: 8 }}>
                 <CartesianGrid stroke="rgba(255,255,255,0.06)" />
                 <XAxis
                   type="number"
@@ -401,6 +543,20 @@ export function MatchExplorer({ match }: { match: MatchRecord }) {
                   labelFormatter={(value) => `Elapsed ${formatMinute(Number(value))}`}
                 />
                 <Legend />
+                {halfGoals.map((goal) => (
+                  <ReferenceLine
+                    key={`${goal.wallclock}-${goal.displayMinute}`}
+                    x={goal.elapsedMinutes}
+                    stroke="#fb7185"
+                    strokeDasharray="4 4"
+                    label={{
+                      value: `${goal.displayMinute} ${lastName(goal.scorer) ?? goal.team}`,
+                      fill: "#fda4af",
+                      fontSize: 11,
+                      position: "top",
+                    }}
+                  />
+                ))}
                 {selectedLines.map((line, index) => (
                   <Line
                     key={line}
@@ -417,6 +573,12 @@ export function MatchExplorer({ match }: { match: MatchRecord }) {
             </ResponsiveContainer>
           </div>
         )}
+        {settled.size > 0 && chartRows.length > 0 ? (
+          <p className="mt-3 text-xs text-slate-500">
+            Over lines stop at the goal that settles them. Historical snapshots from this
+            book often keep stale prices after that.
+          </p>
+        ) : null}
       </div>
 
       {tableRows.length > 0 ? (

@@ -8,6 +8,7 @@ import {
   type MatchUpsert,
 } from "./db";
 import { SCORES_LOOKBACK_DAYS } from "./leagues";
+import { backfillEspnScores } from "./match-details";
 import {
   getEvents,
   getHistoricalEvents,
@@ -88,6 +89,12 @@ export async function refreshLeagueMatches(
   let historyDaysFetched = 0;
   if (lookbackDays > SCORES_LOOKBACK_DAYS) {
     historyDaysFetched = await fetchHistoricalEventDays(sportKey, lookbackDays);
+  }
+
+  try {
+    await backfillEspnScores(sportKey);
+  } catch {
+    // Scores/goals from ESPN are best-effort; odds still work without them.
   }
 
   return { scoresFetched, historyDaysFetched };

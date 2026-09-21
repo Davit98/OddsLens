@@ -27,6 +27,27 @@ export type OddsPoint = {
   underPrice: number | null;
 };
 
+export type GoalEvent = {
+  period: 1 | 2;
+  displayMinute: string;
+  elapsedMinutes: number;
+  wallclock: string | null;
+  team: string;
+  scorer: string | null;
+  assist: string | null;
+  homeScore: number;
+  awayScore: number;
+  ownGoal: boolean;
+  penalty: boolean;
+};
+
+export type CreditEstimate = {
+  estimatedCredits: number;
+  estimatedSnapshots: number;
+  alreadyCached: number;
+  remainingSnapshots: number;
+};
+
 export type SnapshotRow = {
   id: number;
   eventId: string;
