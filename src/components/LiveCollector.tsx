@@ -5,6 +5,7 @@ import { useCredits } from "./CreditsProvider";
 import { formatKickoff, formatScore, matchStatus } from "@/lib/format";
 import { BOOKMAKERS, DEFAULT_BOOKMAKER, LEAGUES, leagueTitle } from "@/lib/leagues";
 import type { Credits, LiveCandidate, LiveFeedRow, LiveJob } from "@/lib/types";
+import type { LeagueFilter } from "./BrowseFilters";
 
 type LiveStatus = {
   job: LiveJob | null;
@@ -39,9 +40,11 @@ function clockOf(match: LiveCandidate): string {
 export function LiveCollector({
   refreshToken = 0,
   onWatch,
+  league = "all",
 }: {
   refreshToken?: number;
   onWatch?: (matches: LiveCandidate[]) => void;
+  league?: LeagueFilter;
 }) {
   const { setCredits } = useCredits();
   const [bookmaker, setBookmaker] = useState(DEFAULT_BOOKMAKER);
@@ -145,12 +148,15 @@ export function LiveCollector({
   const job = status?.job ?? null;
   const running = job?.status === "running";
   const candidates = status?.candidates ?? [];
+  const visible = candidates.filter((match) => league === "all" || match.sportKey === league);
   const feed = status?.feed ?? [];
   const planned = candidates.filter((match) => match.planned);
-  const groups = LEAGUES.map((league) => ({
-    ...league,
-    matches: candidates.filter((match) => match.sportKey === league.key),
-  })).filter((group) => group.matches.length > 0);
+  const groups = LEAGUES.filter((item) => league === "all" || item.key === league)
+    .map((item) => ({
+      ...item,
+      matches: visible.filter((match) => match.sportKey === item.key),
+    }))
+    .filter((group) => group.matches.length > 0);
 
   const collapsedStatus = job
     ? `${running ? "Running" : "Stopped"} · ${planned.length} selected`

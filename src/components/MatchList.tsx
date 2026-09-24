@@ -2,19 +2,17 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { LEAGUES, LOOKBACK_OPTIONS, leagueTitle, type LeagueKey, type LookbackKey } from "@/lib/leagues";
+import { LEAGUES, LOOKBACK_OPTIONS, leagueTitle, type LookbackKey } from "@/lib/leagues";
 import { formatKickoff, matchStatus } from "@/lib/format";
 import type { Credits, LiveCandidate, MatchRecord } from "@/lib/types";
+import { useBrowseFilters, type LeagueFilter } from "./BrowseFilters";
 import { HistoryLoadingCard } from "./HistoryLoadingCard";
 import { LiveCollector } from "./LiveCollector";
 import { useCredits } from "./CreditsProvider";
 
-type LeagueFilter = "all" | LeagueKey;
-
 export function MatchList() {
   const { setCredits } = useCredits();
-  const [league, setLeague] = useState<LeagueFilter>("all");
-  const [lookback, setLookback] = useState<LookbackKey>("3");
+  const { league, setLeague, lookback, setLookback } = useBrowseFilters();
   const [matches, setMatches] = useState<MatchRecord[]>([]);
   const [liveCounts, setLiveCounts] = useState<Record<string, number>>({});
   const [plannedIds, setPlannedIds] = useState<Set<string>>(new Set());
@@ -207,7 +205,7 @@ export function MatchList() {
         ))}
       </div>
 
-      <LiveCollector refreshToken={planTick} onWatch={onWatch} />
+      <LiveCollector league={league} refreshToken={planTick} onWatch={onWatch} />
 
       {loading ? (
         <HistoryLoadingCard
