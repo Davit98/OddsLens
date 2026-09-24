@@ -1,6 +1,6 @@
 # OddsLens
 
-Football odds analytics dashboard for historical first- and second-half alternate totals (`alternate_totals_h1`, `alternate_totals_h2`) across the Big 5 leagues.
+Football odds analytics dashboard for historical first- and second-half alternate totals (`alternate_totals_h1`, `alternate_totals_h2`) across European leagues, including UEFA Champions League and UEFA Nations League.
 
 Historical half-totals from [The Odds API](https://the-odds-api.com/) are available as **~5 minute snapshots**, queried one match at a time. Each snapshot costs **10 credits per market** for one bookmaker. OddsLens fetches on demand, shows the estimated cost first, and caches every snapshot in local SQLite so repeats are free.
 

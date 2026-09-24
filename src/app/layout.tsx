@@ -16,7 +16,7 @@ const mono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: "OddsLens",
-  description: "Historical first and second half alternate totals for the Big 5 football leagues",
+  description: "Historical first and second half alternate totals for European football leagues",
 };
 
 export default function RootLayout({

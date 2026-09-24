@@ -135,7 +135,7 @@ export function MatchList() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-white">
-            Big 5 half totals
+            European half totals
           </h1>
           <p className="mt-1 max-w-2xl text-sm text-slate-400">
             On-demand historical Over lines for 1st and 2nd half alternate totals.

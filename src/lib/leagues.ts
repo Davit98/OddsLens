@@ -29,6 +29,18 @@ export const LEAGUES = [
     country: "France",
     short: "Ligue 1",
   },
+  {
+    key: "soccer_uefa_champs_league",
+    title: "UEFA Champions League",
+    country: "Europe",
+    short: "UCL",
+  },
+  {
+    key: "soccer_uefa_nations_league",
+    title: "UEFA Nations League",
+    country: "Europe",
+    short: "Nations League",
+  },
 ] as const;
 
 export type LeagueKey = (typeof LEAGUES)[number]["key"];
@@ -164,6 +176,8 @@ export const ESPN_LEAGUES: Record<string, string> = {
   soccer_germany_bundesliga: "ger.1",
   soccer_italy_serie_a: "ita.1",
   soccer_france_ligue_one: "fra.1",
+  soccer_uefa_champs_league: "uefa.champions",
+  soccer_uefa_nations_league: "uefa.nations",
 };
 
 export function parseLookback(value: string | null): LookbackKey {
