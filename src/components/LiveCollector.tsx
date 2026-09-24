@@ -22,7 +22,7 @@ function marketLabel(market: string): string {
 }
 
 function lineSummary(row: LiveFeedRow): string {
-  if (!row.available || row.lines.length === 0) return "closed";
+  if (!row.available || row.lines.length === 0) return "suspended";
   const shown = row.lines.slice(0, 4).map((line) => `${line.point} ${line.overPrice?.toFixed(2) ?? "—"}`);
   const extra = row.lines.length > 4 ? ` +${row.lines.length - 4}` : "";
   return `${shown.join(" · ")}${extra}`;
@@ -50,6 +50,7 @@ export function LiveCollector({
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [freshIds, setFreshIds] = useState<Set<number>>(new Set());
+  const [open, setOpen] = useState(true);
   const seenRows = useRef<Set<number> | null>(null);
 
   const apply = useCallback(
@@ -151,19 +152,41 @@ export function LiveCollector({
     matches: candidates.filter((match) => match.sportKey === league.key),
   })).filter((group) => group.matches.length > 0);
 
+  const collapsedStatus = job
+    ? `${running ? "Running" : "Stopped"} · ${planned.length} selected`
+    : "Not started";
+
   return (
     <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div className="max-w-2xl">
-          <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-300">
-            Live minute capture
-          </h2>
-          <p className="mt-1 text-sm text-slate-400">
-            Pick matches from any competition. Once the collector is running, each selected
-            game starts saving match, 1st-half, and 2nd-half alternate totals at kickoff, about 1–3 credits
-            per live match minute. Leave the server running; closing this tab does not stop it.
-          </p>
-        </div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls="live-minute-capture"
+          onClick={() => setOpen((value) => !value)}
+          className="flex items-center gap-2 text-left"
+        >
+          <svg
+            viewBox="0 0 20 20"
+            aria-hidden="true"
+            className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${open ? "rotate-90" : ""}`}
+          >
+            <path
+              fill="currentColor"
+              d="M7.2 4.5a1 1 0 0 1 1.4 0l5 5.2a1 1 0 0 1 0 1.4l-5 5.2a1 1 0 0 1-1.4-1.4L11.4 10 7.2 5.9a1 1 0 0 1 0-1.4Z"
+            />
+          </svg>
+          <span>
+            <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-300">
+              Live minute capture
+            </h2>
+            {open ? null : (
+              <span className="mt-0.5 block text-xs font-normal normal-case tracking-normal text-slate-500">
+                {collapsedStatus}
+              </span>
+            )}
+          </span>
+        </button>
         <div className="flex flex-wrap items-center gap-2">
           <select
             value={bookmaker}
@@ -198,6 +221,16 @@ export function LiveCollector({
           )}
         </div>
       </div>
+
+      {open ? (
+        <div id="live-minute-capture">
+          <p className="mt-3 max-w-2xl text-sm text-slate-400">
+            Pick matches from any competition. Once the collector is running, each selected
+            game is polled once a minute from kickoff. The first check spends 1 credit to see
+            which half totals that book is offering, and only those markets are polled. A
+            missing line is saved as suspended and checked again next minute. Leave the server
+            running; closing this tab does not stop it.
+          </p>
 
       {job ? (
         <p className="mt-3 text-xs text-slate-500">
@@ -317,6 +350,8 @@ export function LiveCollector({
           </div>
         )}
       </div>
+        </div>
+      ) : null}
     </section>
   );
 }

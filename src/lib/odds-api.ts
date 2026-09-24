@@ -1,5 +1,5 @@
 import { saveCredits } from "./db";
-import { BOOKMAKERS } from "./leagues";
+import { bookmakerRegion } from "./leagues";
 
 const BASE_URL = "https://api.the-odds-api.com/v4";
 
@@ -117,11 +117,6 @@ export async function getHistoricalEvents(
   return payload?.data ?? [];
 }
 
-function regionForBookmaker(bookmaker: string): string {
-  const match = BOOKMAKERS.find((item) => item.key === bookmaker);
-  return match ? match.region.toLowerCase() : "eu";
-}
-
 export type EventOdds = {
   id: string;
   sport_key: string;
@@ -132,6 +127,7 @@ export type EventOdds = {
   bookmakers: Array<{
     key: string;
     title: string;
+    last_update?: string;
     markets: Array<{
       key: string;
       last_update?: string;
@@ -151,9 +147,34 @@ export function getEventOdds(input: {
   markets: string;
 }): Promise<EventOdds> {
   return oddsGet(`/sports/${input.sportKey}/events/${input.eventId}/odds`, {
+    regions: bookmakerRegion(input.bookmaker),
     bookmakers: input.bookmaker,
     markets: input.markets,
     oddsFormat: "decimal",
+    dateFormat: "iso",
+  });
+}
+
+export type EventMarketCatalog = {
+  id: string;
+  sport_key: string;
+  commence_time: string;
+  home_team: string;
+  away_team: string;
+  bookmakers: Array<{
+    key: string;
+    title: string;
+    markets: Array<{ key: string; last_update?: string }>;
+  }>;
+};
+
+export function getEventMarkets(input: {
+  sportKey: string;
+  eventId: string;
+  region: string;
+}): Promise<EventMarketCatalog> {
+  return oddsGet(`/sports/${input.sportKey}/events/${input.eventId}/markets`, {
+    regions: input.region,
     dateFormat: "iso",
   });
 }
@@ -168,7 +189,7 @@ export function getHistoricalEventOdds(input: {
   return oddsGet(
     `/historical/sports/${input.sportKey}/events/${input.eventId}/odds`,
     {
-      regions: regionForBookmaker(input.bookmaker),
+      regions: bookmakerRegion(input.bookmaker),
       bookmakers: input.bookmaker,
       markets: input.markets,
       date: input.date,

@@ -60,6 +60,8 @@ export const BOOKMAKERS = [
   { key: "paddypower", title: "Paddy Power", region: "UK" },
   { key: "skybet", title: "Sky Bet", region: "UK" },
   { key: "ladbrokes_uk", title: "Ladbrokes", region: "UK" },
+  { key: "livescorebet", title: "LiveScore Bet", region: "UK" },
+  { key: "virginbet", title: "Virgin Bet", region: "UK" },
   { key: "marathonbet", title: "Marathonbet", region: "EU" },
   { key: "betclic", title: "Betclic", region: "EU" },
   { key: "nordicbet", title: "NordicBet", region: "EU" },
@@ -69,6 +71,11 @@ export const BOOKMAKERS = [
 ] as const;
 
 export const DEFAULT_BOOKMAKER = "leovegas";
+
+export function bookmakerRegion(bookmaker: string): string {
+  const match = BOOKMAKERS.find((item) => item.key === bookmaker);
+  return match ? match.region.toLowerCase() : "eu";
+}
 
 export const MARKETS = {
   full: "alternate_totals",

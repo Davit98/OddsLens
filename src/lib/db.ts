@@ -128,6 +128,7 @@ function createDb(): Database.Database {
       home_score INTEGER,
       away_score INTEGER,
       available INTEGER NOT NULL DEFAULT 0,
+      last_update TEXT,
       UNIQUE(event_id, bookmaker, market, elapsed_minute)
     );
 
@@ -209,6 +210,7 @@ export function getDb(): Database.Database {
       home_score INTEGER,
       away_score INTEGER,
       available INTEGER NOT NULL DEFAULT 0,
+      last_update TEXT,
       UNIQUE(event_id, bookmaker, market, elapsed_minute)
     );
     CREATE TABLE IF NOT EXISTS live_odds (
@@ -226,6 +228,7 @@ export function getDb(): Database.Database {
   `);
   ensureColumn(g.__oddslensDb, "match_espn", "h1_end_minute", "REAL");
   ensureColumn(g.__oddslensDb, "match_espn", "h2_end_minute", "REAL");
+  ensureColumn(g.__oddslensDb, "live_snapshots", "last_update", "TEXT");
   return g.__oddslensDb;
 }
 
@@ -424,18 +427,38 @@ export function touchLiveJob(input: { lastError: string | null; creditsDelta: nu
     .run(new Date().toISOString(), input.lastError, Math.max(0, input.creditsDelta));
 }
 
-export function storedLiveMarkets(
-  eventId: string,
-  bookmaker: string,
-  elapsedMinute: number,
-): string[] {
+export type LiveQuote = {
+  market: string;
+  elapsedMinute: number;
+  lastUpdate: string | null;
+  available: boolean;
+};
+
+export function latestLiveQuotes(eventId: string, bookmaker: string): Map<string, LiveQuote> {
   const rows = getDb()
     .prepare(
-      `SELECT market FROM live_snapshots
-       WHERE event_id = ? AND bookmaker = ? AND elapsed_minute = ?`,
+      `SELECT market, elapsed_minute, last_update, available
+       FROM live_snapshots
+       WHERE event_id = ? AND bookmaker = ?
+       ORDER BY elapsed_minute ASC, id ASC`,
     )
-    .all(eventId, bookmaker, elapsedMinute) as { market: string }[];
-  return rows.map((row) => row.market);
+    .all(eventId, bookmaker) as Array<{
+    market: string;
+    elapsed_minute: number;
+    last_update: string | null;
+    available: number;
+  }>;
+
+  const quotes = new Map<string, LiveQuote>();
+  for (const row of rows) {
+    quotes.set(row.market, {
+      market: row.market,
+      elapsedMinute: row.elapsed_minute,
+      lastUpdate: row.last_update,
+      available: Boolean(row.available),
+    });
+  }
+  return quotes;
 }
 
 export function latestLiveMinute(eventId: string, bookmaker: string): number | null {
@@ -461,29 +484,36 @@ export function insertLiveMinute(input: {
   markets: Array<{
     market: string;
     available: boolean;
+    lastUpdate: string | null;
     outcomes: Array<{ point: number; overPrice: number | null; underPrice: number | null }>;
   }>;
 }): number {
   const db = getDb();
-  const insertSnapshot = db.prepare(
+  const upsertSnapshot = db.prepare(
     `INSERT INTO live_snapshots (
        event_id, bookmaker, market, elapsed_minute, captured_at, display_clock,
-       period, home_score, away_score, available
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(event_id, bookmaker, market, elapsed_minute) DO NOTHING`,
+       period, home_score, away_score, available, last_update
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(event_id, bookmaker, market, elapsed_minute) DO UPDATE SET
+       captured_at = excluded.captured_at,
+       display_clock = excluded.display_clock,
+       period = excluded.period,
+       home_score = excluded.home_score,
+       away_score = excluded.away_score,
+       available = excluded.available,
+       last_update = excluded.last_update
+     RETURNING id`,
   );
+  const clearOdds = db.prepare("DELETE FROM live_odds WHERE snapshot_id = ?");
   const insertOdds = db.prepare(
     `INSERT INTO live_odds (snapshot_id, point, over_price, under_price)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(snapshot_id, point) DO UPDATE SET
-       over_price = excluded.over_price,
-       under_price = excluded.under_price`,
+     VALUES (?, ?, ?, ?)`,
   );
 
-  let inserted = 0;
+  let written = 0;
   const tx = db.transaction(() => {
     for (const market of input.markets) {
-      const result = insertSnapshot.run(
+      const row = upsertSnapshot.get(
         input.eventId,
         input.bookmaker,
         market.market,
@@ -494,17 +524,17 @@ export function insertLiveMinute(input: {
         input.homeScore,
         input.awayScore,
         market.available ? 1 : 0,
-      );
-      if (result.changes === 0) continue;
-      inserted += 1;
-      const snapshotId = Number(result.lastInsertRowid);
+        market.lastUpdate,
+      ) as { id: number };
+      written += 1;
+      clearOdds.run(row.id);
       for (const outcome of market.outcomes) {
-        insertOdds.run(snapshotId, outcome.point, outcome.overPrice, outcome.underPrice);
+        insertOdds.run(row.id, outcome.point, outcome.overPrice, outcome.underPrice);
       }
     }
   });
   tx();
-  return inserted;
+  return written;
 }
 
 export function addLiveTarget(eventId: string): void {
