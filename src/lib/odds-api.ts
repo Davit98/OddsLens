@@ -122,6 +122,42 @@ function regionForBookmaker(bookmaker: string): string {
   return match ? match.region.toLowerCase() : "eu";
 }
 
+export type EventOdds = {
+  id: string;
+  sport_key: string;
+  sport_title: string;
+  commence_time: string;
+  home_team: string;
+  away_team: string;
+  bookmakers: Array<{
+    key: string;
+    title: string;
+    markets: Array<{
+      key: string;
+      last_update?: string;
+      outcomes: Array<{
+        name: string;
+        price: number;
+        point?: number;
+      }>;
+    }>;
+  }>;
+};
+
+export function getEventOdds(input: {
+  sportKey: string;
+  eventId: string;
+  bookmaker: string;
+  markets: string;
+}): Promise<EventOdds> {
+  return oddsGet(`/sports/${input.sportKey}/events/${input.eventId}/odds`, {
+    bookmakers: input.bookmaker,
+    markets: input.markets,
+    oddsFormat: "decimal",
+    dateFormat: "iso",
+  });
+}
+
 export function getHistoricalEventOdds(input: {
   sportKey: string;
   eventId: string;

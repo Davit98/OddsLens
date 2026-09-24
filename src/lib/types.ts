@@ -16,7 +16,50 @@ export type MatchRecord = {
   homeScore: number | null;
   awayScore: number | null;
   cachedSnapshots: number;
+  liveMinutes: number;
   cachedBookmakers: string[];
+};
+
+export type LiveJob = {
+  bookmaker: string;
+  sportKey: string;
+  status: "running" | "stopped";
+  startedAt: string;
+  stoppedAt: string | null;
+  lastTickAt: string | null;
+  lastError: string | null;
+  creditsSpent: number;
+};
+
+export type LiveCandidate = {
+  eventId: string;
+  sportKey: string;
+  homeTeam: string;
+  awayTeam: string;
+  commenceTime: string;
+  completed: boolean;
+  homeScore: number | null;
+  awayScore: number | null;
+  planned: boolean;
+  liveMinutes: number;
+  elapsedMinute: number | null;
+  displayClock: string | null;
+};
+
+export type LiveFeedRow = {
+  id: number;
+  eventId: string;
+  sportKey: string;
+  homeTeam: string;
+  awayTeam: string;
+  market: string;
+  elapsedMinute: number;
+  displayClock: string | null;
+  capturedAt: string;
+  available: boolean;
+  homeScore: number | null;
+  awayScore: number | null;
+  lines: Array<{ point: number; overPrice: number | null }>;
 };
 
 export type OddsPoint = {

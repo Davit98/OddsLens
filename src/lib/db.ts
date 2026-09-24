@@ -1,7 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
-import type { Credits, GoalEvent, HalfEnds, MatchRecord, OddsPoint, SnapshotRow } from "./types";
+import type {
+  Credits,
+  GoalEvent,
+  HalfEnds,
+  LiveCandidate,
+  LiveFeedRow,
+  LiveJob,
+  MatchRecord,
+  OddsPoint,
+  SnapshotRow,
+} from "./types";
 
 const DB_PATH = path.join(process.cwd(), "data", "oddslens.db");
 
@@ -93,6 +103,47 @@ function createDb(): Database.Database {
       day TEXT NOT NULL,
       PRIMARY KEY (sport_key, day)
     );
+
+    CREATE TABLE IF NOT EXISTS live_jobs (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      bookmaker TEXT NOT NULL,
+      sport_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      stopped_at TEXT,
+      last_tick_at TEXT,
+      last_error TEXT,
+      credits_spent INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS live_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id TEXT NOT NULL,
+      bookmaker TEXT NOT NULL,
+      market TEXT NOT NULL,
+      elapsed_minute INTEGER NOT NULL,
+      captured_at TEXT NOT NULL,
+      display_clock TEXT,
+      period INTEGER,
+      home_score INTEGER,
+      away_score INTEGER,
+      available INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(event_id, bookmaker, market, elapsed_minute)
+    );
+
+    CREATE TABLE IF NOT EXISTS live_odds (
+      snapshot_id INTEGER NOT NULL,
+      point REAL NOT NULL,
+      over_price REAL,
+      under_price REAL,
+      PRIMARY KEY (snapshot_id, point),
+      FOREIGN KEY (snapshot_id) REFERENCES live_snapshots(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS live_targets (
+      event_id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL
+    );
   `);
   return db;
 }
@@ -134,6 +185,43 @@ export function getDb(): Database.Database {
       sport_key TEXT NOT NULL,
       day TEXT NOT NULL,
       PRIMARY KEY (sport_key, day)
+    );
+    CREATE TABLE IF NOT EXISTS live_jobs (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      bookmaker TEXT NOT NULL,
+      sport_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      stopped_at TEXT,
+      last_tick_at TEXT,
+      last_error TEXT,
+      credits_spent INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS live_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id TEXT NOT NULL,
+      bookmaker TEXT NOT NULL,
+      market TEXT NOT NULL,
+      elapsed_minute INTEGER NOT NULL,
+      captured_at TEXT NOT NULL,
+      display_clock TEXT,
+      period INTEGER,
+      home_score INTEGER,
+      away_score INTEGER,
+      available INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(event_id, bookmaker, market, elapsed_minute)
+    );
+    CREATE TABLE IF NOT EXISTS live_odds (
+      snapshot_id INTEGER NOT NULL,
+      point REAL NOT NULL,
+      over_price REAL,
+      under_price REAL,
+      PRIMARY KEY (snapshot_id, point),
+      FOREIGN KEY (snapshot_id) REFERENCES live_snapshots(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS live_targets (
+      event_id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL
     );
   `);
   ensureColumn(g.__oddslensDb, "match_espn", "h1_end_minute", "REAL");
@@ -243,11 +331,16 @@ export function upsertMatches(matches: MatchUpsert[]): void {
   tx(matches);
 }
 
+const MATCH_COLUMNS = `
+  m.*,
+  (SELECT COUNT(*) FROM snapshots s WHERE s.event_id = m.id) AS cached_snapshots,
+  (SELECT COUNT(DISTINCT elapsed_minute) FROM live_snapshots ls WHERE ls.event_id = m.id) AS live_minutes
+`;
+
 export function listMatches(sportKey?: string, commenceFrom?: string): MatchRecord[] {
   const db = getDb();
   const sql = `
-    SELECT m.*,
-      (SELECT COUNT(*) FROM snapshots s WHERE s.event_id = m.id) AS cached_snapshots
+    SELECT ${MATCH_COLUMNS}
     FROM matches m
     WHERE m.commence_time >= ?
       ${sportKey ? "AND m.sport_key = ?" : ""}
@@ -264,13 +357,281 @@ export function listMatches(sportKey?: string, commenceFrom?: string): MatchReco
 
 export function getMatch(id: string): MatchRecord | null {
   const row = getDb()
-    .prepare(
-      `SELECT m.*,
-        (SELECT COUNT(*) FROM snapshots s WHERE s.event_id = m.id) AS cached_snapshots
-       FROM matches m WHERE m.id = ?`,
-    )
+    .prepare(`SELECT ${MATCH_COLUMNS} FROM matches m WHERE m.id = ?`)
     .get(id) as DbMatch | undefined;
   return row ? mapMatch(row) : null;
+}
+
+export function getLiveJob(): LiveJob | null {
+  const row = getDb()
+    .prepare(
+      `SELECT bookmaker, sport_key, status, started_at, stopped_at, last_tick_at,
+              last_error, credits_spent
+       FROM live_jobs WHERE id = 1`,
+    )
+    .get() as DbLiveJob | undefined;
+  return row ? mapLiveJob(row) : null;
+}
+
+export function startLiveJob(input: { bookmaker: string }): LiveJob {
+  const current = getLiveJob();
+  if (current?.status === "running" && current.bookmaker === input.bookmaker) {
+    return current;
+  }
+
+  const startedAt = new Date().toISOString();
+  getDb()
+    .prepare(
+      `INSERT INTO live_jobs (
+         id, bookmaker, sport_key, status, started_at, stopped_at,
+         last_tick_at, last_error, credits_spent
+       ) VALUES (1, ?, ?, 'running', ?, NULL, NULL, NULL, 0)
+       ON CONFLICT(id) DO UPDATE SET
+         bookmaker = excluded.bookmaker,
+         sport_key = excluded.sport_key,
+         status = 'running',
+         started_at = excluded.started_at,
+         stopped_at = NULL,
+         last_tick_at = NULL,
+         last_error = NULL,
+         credits_spent = 0`,
+    )
+    .run(input.bookmaker, "selected", startedAt);
+
+  const job = getLiveJob();
+  if (!job) throw new Error("Failed to start live job");
+  return job;
+}
+
+export function stopLiveJob(): LiveJob | null {
+  getDb()
+    .prepare(
+      `UPDATE live_jobs
+       SET status = 'stopped', stopped_at = ?
+       WHERE id = 1 AND status = 'running'`,
+    )
+    .run(new Date().toISOString());
+  return getLiveJob();
+}
+
+export function touchLiveJob(input: { lastError: string | null; creditsDelta: number }): void {
+  getDb()
+    .prepare(
+      `UPDATE live_jobs
+       SET last_tick_at = ?, last_error = ?, credits_spent = credits_spent + ?
+       WHERE id = 1 AND status = 'running'`,
+    )
+    .run(new Date().toISOString(), input.lastError, Math.max(0, input.creditsDelta));
+}
+
+export function storedLiveMarkets(
+  eventId: string,
+  bookmaker: string,
+  elapsedMinute: number,
+): string[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT market FROM live_snapshots
+       WHERE event_id = ? AND bookmaker = ? AND elapsed_minute = ?`,
+    )
+    .all(eventId, bookmaker, elapsedMinute) as { market: string }[];
+  return rows.map((row) => row.market);
+}
+
+export function latestLiveMinute(eventId: string, bookmaker: string): number | null {
+  const row = getDb()
+    .prepare(
+      `SELECT MAX(elapsed_minute) AS minute
+       FROM live_snapshots
+       WHERE event_id = ? AND bookmaker = ?`,
+    )
+    .get(eventId, bookmaker) as { minute: number | null };
+  return row.minute;
+}
+
+export function insertLiveMinute(input: {
+  eventId: string;
+  bookmaker: string;
+  elapsedMinute: number;
+  capturedAt: string;
+  displayClock: string | null;
+  period: number | null;
+  homeScore: number | null;
+  awayScore: number | null;
+  markets: Array<{
+    market: string;
+    available: boolean;
+    outcomes: Array<{ point: number; overPrice: number | null; underPrice: number | null }>;
+  }>;
+}): number {
+  const db = getDb();
+  const insertSnapshot = db.prepare(
+    `INSERT INTO live_snapshots (
+       event_id, bookmaker, market, elapsed_minute, captured_at, display_clock,
+       period, home_score, away_score, available
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(event_id, bookmaker, market, elapsed_minute) DO NOTHING`,
+  );
+  const insertOdds = db.prepare(
+    `INSERT INTO live_odds (snapshot_id, point, over_price, under_price)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(snapshot_id, point) DO UPDATE SET
+       over_price = excluded.over_price,
+       under_price = excluded.under_price`,
+  );
+
+  let inserted = 0;
+  const tx = db.transaction(() => {
+    for (const market of input.markets) {
+      const result = insertSnapshot.run(
+        input.eventId,
+        input.bookmaker,
+        market.market,
+        input.elapsedMinute,
+        input.capturedAt,
+        input.displayClock,
+        input.period,
+        input.homeScore,
+        input.awayScore,
+        market.available ? 1 : 0,
+      );
+      if (result.changes === 0) continue;
+      inserted += 1;
+      const snapshotId = Number(result.lastInsertRowid);
+      for (const outcome of market.outcomes) {
+        insertOdds.run(snapshotId, outcome.point, outcome.overPrice, outcome.underPrice);
+      }
+    }
+  });
+  tx();
+  return inserted;
+}
+
+export function addLiveTarget(eventId: string): void {
+  getDb()
+    .prepare(
+      `INSERT INTO live_targets (event_id, created_at) VALUES (?, ?)
+       ON CONFLICT(event_id) DO NOTHING`,
+    )
+    .run(eventId, new Date().toISOString());
+}
+
+export function removeLiveTarget(eventId: string): void {
+  getDb().prepare("DELETE FROM live_targets WHERE event_id = ?").run(eventId);
+}
+
+export function listLiveTargetMatches(): MatchRecord[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT ${MATCH_COLUMNS}
+       FROM matches m
+       INNER JOIN live_targets t ON t.event_id = m.id
+       ORDER BY m.commence_time ASC`,
+    )
+    .all() as DbMatch[];
+  return rows.map(mapMatch);
+}
+
+export function listLiveCandidates(input: {
+  bookmaker: string;
+  fromIso: string;
+  toIso: string;
+}): LiveCandidate[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT m.id, m.sport_key, m.home_team, m.away_team, m.commence_time, m.completed,
+              m.home_score, m.away_score,
+              EXISTS(SELECT 1 FROM live_targets t WHERE t.event_id = m.id) AS planned,
+              (SELECT COUNT(DISTINCT elapsed_minute) FROM live_snapshots s
+                WHERE s.event_id = m.id AND s.bookmaker = ?) AS live_minutes,
+              (SELECT MAX(elapsed_minute) FROM live_snapshots s
+                WHERE s.event_id = m.id AND s.bookmaker = ?) AS elapsed_minute,
+              (SELECT display_clock FROM live_snapshots s
+                WHERE s.event_id = m.id AND s.bookmaker = ?
+                ORDER BY elapsed_minute DESC, id DESC LIMIT 1) AS display_clock
+       FROM matches m
+       WHERE (
+           m.completed = 0
+           AND m.commence_time >= ?
+           AND m.commence_time <= ?
+         )
+         OR EXISTS (SELECT 1 FROM live_targets t WHERE t.event_id = m.id)
+       ORDER BY m.commence_time ASC`,
+    )
+    .all(
+      input.bookmaker,
+      input.bookmaker,
+      input.bookmaker,
+      input.fromIso,
+      input.toIso,
+    ) as DbLiveCandidate[];
+
+  return rows.map((row) => ({
+    eventId: row.id,
+    sportKey: row.sport_key,
+    homeTeam: row.home_team,
+    awayTeam: row.away_team,
+    commenceTime: row.commence_time,
+    completed: Boolean(row.completed),
+    homeScore: row.home_score,
+    awayScore: row.away_score,
+    planned: Boolean(row.planned),
+    liveMinutes: row.live_minutes,
+    elapsedMinute: row.elapsed_minute,
+    displayClock: row.display_clock,
+  }));
+}
+
+export function listLiveFeed(bookmaker: string, limit = 40): LiveFeedRow[] {
+  const db = getDb();
+  const snapshots = db
+    .prepare(
+      `SELECT s.id, s.event_id, s.market, s.elapsed_minute, s.display_clock, s.captured_at,
+              s.available, s.home_score, s.away_score,
+              m.home_team, m.away_team, m.sport_key
+       FROM live_snapshots s
+       INNER JOIN live_targets t ON t.event_id = s.event_id
+       INNER JOIN matches m ON m.id = s.event_id
+       WHERE s.bookmaker = ?
+       ORDER BY s.captured_at DESC, s.id DESC
+       LIMIT ?`,
+    )
+    .all(bookmaker, limit) as DbLiveFeed[];
+
+  if (snapshots.length === 0) return [];
+
+  const ids = snapshots.map((row) => row.id);
+  const odds = db
+    .prepare(
+      `SELECT snapshot_id, point, over_price
+       FROM live_odds
+       WHERE snapshot_id IN (${ids.map(() => "?").join(",")})
+       ORDER BY point ASC`,
+    )
+    .all(...ids) as Array<{ snapshot_id: number; point: number; over_price: number | null }>;
+
+  const linesBySnapshot = new Map<number, Array<{ point: number; overPrice: number | null }>>();
+  for (const row of odds) {
+    const list = linesBySnapshot.get(row.snapshot_id) ?? [];
+    if (row.over_price !== null) list.push({ point: row.point, overPrice: row.over_price });
+    linesBySnapshot.set(row.snapshot_id, list);
+  }
+
+  return snapshots.map((row) => ({
+    id: row.id,
+    eventId: row.event_id,
+    sportKey: row.sport_key,
+    homeTeam: row.home_team,
+    awayTeam: row.away_team,
+    market: row.market,
+    elapsedMinute: row.elapsed_minute,
+    displayClock: row.display_clock,
+    capturedAt: row.captured_at,
+    available: Boolean(row.available),
+    homeScore: row.home_score,
+    awayScore: row.away_score,
+    lines: linesBySnapshot.get(row.id) ?? [],
+  }));
 }
 
 export function getCachedBookmakers(eventId: string): string[] {
@@ -591,6 +952,36 @@ export function getOddsSeries(input: {
   }));
 }
 
+export function getLiveOddsSeries(input: {
+  eventId: string;
+  bookmaker: string;
+  market: string;
+}): OddsPoint[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT s.captured_at, s.elapsed_minute, o.point, o.over_price, o.under_price
+       FROM live_snapshots s
+       LEFT JOIN live_odds o ON o.snapshot_id = s.id
+       WHERE s.event_id = ? AND s.bookmaker = ? AND s.market = ?
+       ORDER BY s.elapsed_minute ASC, o.point ASC`,
+    )
+    .all(input.eventId, input.bookmaker, input.market) as {
+    captured_at: string;
+    elapsed_minute: number;
+    point: number | null;
+    over_price: number | null;
+    under_price: number | null;
+  }[];
+
+  return rows.map((row) => ({
+    timestamp: `${row.captured_at}:${row.elapsed_minute}`,
+    elapsedMinutes: row.elapsed_minute,
+    point: row.point,
+    overPrice: row.over_price,
+    underPrice: row.under_price,
+  }));
+}
+
 type DbMatch = {
   id: string;
   sport_key: string;
@@ -602,6 +993,48 @@ type DbMatch = {
   home_score: number | null;
   away_score: number | null;
   cached_snapshots: number;
+  live_minutes: number;
+};
+
+type DbLiveJob = {
+  bookmaker: string;
+  sport_key: string;
+  status: string;
+  started_at: string;
+  stopped_at: string | null;
+  last_tick_at: string | null;
+  last_error: string | null;
+  credits_spent: number;
+};
+
+type DbLiveCandidate = {
+  id: string;
+  sport_key: string;
+  home_team: string;
+  away_team: string;
+  commence_time: string;
+  completed: number;
+  home_score: number | null;
+  away_score: number | null;
+  planned: number;
+  live_minutes: number;
+  elapsed_minute: number | null;
+  display_clock: string | null;
+};
+
+type DbLiveFeed = {
+  id: number;
+  event_id: string;
+  market: string;
+  elapsed_minute: number;
+  display_clock: string | null;
+  captured_at: string;
+  available: number;
+  home_score: number | null;
+  away_score: number | null;
+  home_team: string;
+  away_team: string;
+  sport_key: string;
 };
 
 type DbSnapshot = {
@@ -640,7 +1073,21 @@ function mapMatch(row: DbMatch): MatchRecord {
     homeScore: row.home_score,
     awayScore: row.away_score,
     cachedSnapshots: row.cached_snapshots,
+    liveMinutes: row.live_minutes ?? 0,
     cachedBookmakers: getCachedBookmakers(row.id),
+  };
+}
+
+function mapLiveJob(row: DbLiveJob): LiveJob {
+  return {
+    bookmaker: row.bookmaker,
+    sportKey: row.sport_key,
+    status: row.status === "running" ? "running" : "stopped",
+    startedAt: row.started_at,
+    stoppedAt: row.stopped_at,
+    lastTickAt: row.last_tick_at,
+    lastError: row.last_error,
+    creditsSpent: row.credits_spent,
   };
 }
 

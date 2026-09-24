@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getCredits, getMatch, getMatchEspn, getOddsSeries } from "@/lib/db";
+import { getCredits, getLiveOddsSeries, getMatch, getMatchEspn, getOddsSeries } from "@/lib/db";
 import { estimateCredits, ingestMatchOdds } from "@/lib/ingest";
 import { DEFAULT_BOOKMAKER, MARKETS, type MarketKey } from "@/lib/leagues";
 import { ensureMatchDetails } from "@/lib/match-details";
@@ -11,6 +11,7 @@ export const maxDuration = 300;
 
 const MARKET_VALUES = new Set<string>(Object.values(MARKETS));
 const CHART_MARKETS: MarketKey[] = [MARKETS.h1, MARKETS.h2];
+const LIVE_CHART_MARKETS: MarketKey[] = [MARKETS.h1, MARKETS.h2, MARKETS.full];
 
 function parseMarkets(value: string | null): MarketKey[] {
   const raw = (value ?? `${MARKETS.h1},${MARKETS.h2}`)
@@ -27,6 +28,16 @@ function seriesFor(id: string, bookmaker: string, commenceTime: string) {
       bookmaker,
       market,
       commenceTime,
+    }).map((point) => ({ ...point, market })),
+  );
+}
+
+function liveSeriesFor(id: string, bookmaker: string) {
+  return LIVE_CHART_MARKETS.flatMap((market) =>
+    getLiveOddsSeries({
+      eventId: id,
+      bookmaker,
+      market,
     }).map((point) => ({ ...point, market })),
   );
 }
@@ -49,6 +60,12 @@ function marketEstimates(
       halfEnds,
       markets: [MARKETS.h2],
     }),
+    [MARKETS.full]: estimateCredits({
+      eventId,
+      bookmaker,
+      halfEnds,
+      markets: [MARKETS.full],
+    }),
   };
 }
 
@@ -65,6 +82,7 @@ export async function GET(
   const { searchParams } = new URL(request.url);
   const bookmaker = searchParams.get("bookmaker") ?? DEFAULT_BOOKMAKER;
   const markets = parseMarkets(searchParams.get("markets"));
+  const source = searchParams.get("source") === "live" ? "live" : "historical";
   const { goals, halfEnds } = await ensureMatchDetails(match);
   const fresh = getMatch(id) ?? match;
 
@@ -72,7 +90,11 @@ export async function GET(
     match: fresh,
     bookmaker,
     markets,
-    series: seriesFor(id, bookmaker, fresh.commenceTime),
+    source,
+    series:
+      source === "live"
+        ? liveSeriesFor(id, bookmaker)
+        : seriesFor(id, bookmaker, fresh.commenceTime),
     estimate: estimateCredits({
       eventId: id,
       bookmaker,

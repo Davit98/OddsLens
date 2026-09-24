@@ -46,6 +46,9 @@ export type EspnFixture = {
   homeScore: number | null;
   awayScore: number | null;
   completed: boolean;
+  phase: "pre" | "live" | "halftime" | "ft";
+  period: number | null;
+  displayClock: string | null;
 };
 
 type EspnKeyEvent = {
@@ -129,6 +132,34 @@ async function espnGet<T>(path: string, params: Record<string, string> = {}): Pr
   }
 }
 
+type EspnStatus = {
+  displayClock?: string;
+  period?: number;
+  type?: {
+    completed?: boolean;
+    state?: string;
+    name?: string;
+    detail?: string;
+    shortDetail?: string;
+  };
+};
+
+function espnPhase(status: EspnStatus | undefined): EspnFixture["phase"] {
+  const type = status?.type;
+  const name = type?.name ?? "";
+  const detail = `${type?.shortDetail ?? ""} ${type?.detail ?? ""}`;
+  if (type?.completed || type?.state === "post" || name === "STATUS_FULL_TIME") return "ft";
+  if (name === "STATUS_HALFTIME" || /\bHT\b/i.test(detail)) return "halftime";
+  if (type?.state === "in" || name === "STATUS_IN_PROGRESS") return "live";
+  return "pre";
+}
+
+function espnClock(status: EspnStatus | undefined): string | null {
+  const clock = status?.type?.shortDetail ?? status?.type?.detail ?? status?.displayClock;
+  const text = clock?.trim();
+  return text ? text : null;
+}
+
 function namesOf(team: {
   displayName?: string;
   shortDisplayName?: string;
@@ -158,7 +189,7 @@ export async function fetchEspnScoreboard(
       date?: string;
       competitions?: Array<{
         date?: string;
-        status?: { type?: { completed?: boolean; state?: string } };
+        status?: EspnStatus;
         competitors?: Array<{
           homeAway?: string;
           score?: string;
@@ -193,7 +224,10 @@ export async function fetchEspnScoreboard(
       awayNames: namesOf(away.team),
       homeScore: Number.isFinite(homeScore) ? homeScore : null,
       awayScore: Number.isFinite(awayScore) ? awayScore : null,
-      completed: Boolean(competition.status?.type?.completed),
+      completed: Boolean(competition.status?.type?.completed) || espnPhase(competition.status) === "ft",
+      phase: espnPhase(competition.status),
+      period: competition.status?.period ?? null,
+      displayClock: espnClock(competition.status),
     });
   }
   return fixtures;

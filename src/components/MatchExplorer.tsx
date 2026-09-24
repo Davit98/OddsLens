@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   CartesianGrid,
@@ -41,10 +41,19 @@ import type {
 
 type SeriesPoint = OddsPoint & { market: string };
 
+type OddsSource = "historical" | "live";
+
+function marketPhrase(market: MarketKey): string {
+  if (market === MARKETS.h1) return "1st-half totals";
+  if (market === MARKETS.h2) return "2nd-half totals";
+  return "match totals";
+}
+
 type OddsResponse = {
   match: MatchRecord;
   bookmaker: string;
   markets: MarketKey[];
+  source?: OddsSource;
   series: SeriesPoint[];
   estimate: CreditEstimate;
   estimates?: Record<MarketKey, CreditEstimate>;
@@ -133,7 +142,9 @@ function overAt(
 
 function settleTimes(goals: GoalEvent[], market: MarketKey, lines: number[]) {
   const halfGoals = goals
-    .filter((goal) => (market === MARKETS.h1 ? goal.period === 1 : goal.period === 2))
+    .filter((goal) =>
+      market === MARKETS.h1 ? goal.period === 1 : market === MARKETS.h2 ? goal.period === 2 : true,
+    )
     .sort((a, b) => a.elapsedMinutes - b.elapsedMinutes);
   const settled = new Map<number, number>();
   for (const line of lines) {
@@ -164,6 +175,9 @@ export function MatchExplorer({
   const [fetchH1, setFetchH1] = useState(true);
   const [fetchH2, setFetchH2] = useState(true);
   const [viewMarket, setViewMarket] = useState<MarketKey>(MARKETS.h1);
+  const [source, setSource] = useState<OddsSource>(
+    match.liveMinutes > 0 ? "live" : "historical",
+  );
   const [selectedLines, setSelectedLines] = useState<number[]>(DEFAULT_LINES);
   const [series, setSeries] = useState<SeriesPoint[]>([]);
   const [estimates, setEstimates] = useState<Record<MarketKey, CreditEstimate> | null>(
@@ -199,6 +213,7 @@ export function MatchExplorer({
         setEstimates({
           [MARKETS.h1]: data.estimate,
           [MARKETS.h2]: EMPTY_ESTIMATE,
+          [MARKETS.full]: EMPTY_ESTIMATE,
         });
       }
       if (data.match) setCurrentMatch(data.match);
@@ -209,24 +224,54 @@ export function MatchExplorer({
     [setCredits],
   );
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const requestGen = useRef(0);
+  const didPickHalf = useRef(false);
+
+  const load = useCallback(async (quiet = false) => {
+    const gen = ++requestGen.current;
+    if (!quiet) setLoading(true);
     setError(null);
-    const params = new URLSearchParams({ bookmaker });
+    const params = new URLSearchParams({ bookmaker, source });
     const response = await fetch(`/api/matches/${match.id}/odds?${params}`);
     const data = (await response.json()) as OddsResponse;
+    if (gen !== requestGen.current) return;
     if (!response.ok) {
-      setError(data.error ?? "Failed to load cached odds");
+      setError(data.error ?? "Failed to load odds");
       setLoading(false);
       return;
     }
     applyOddsPayload(data);
     setLoading(false);
-  }, [applyOddsPayload, bookmaker, match.id]);
+  }, [applyOddsPayload, bookmaker, match.id, source]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (source !== "live" || didPickHalf.current || loading) return;
+    const inWindow = (market: MarketKey) => {
+      const end = market === MARKETS.h1 ? halfEnds.h1EndMinute : halfEnds.h2EndMinute;
+      const { min, max } = marketWindow(market, end);
+      return series.some(
+        (row) => row.market === market && row.elapsedMinutes >= min && row.elapsedMinutes <= max,
+      );
+    };
+    const hasH1 = inWindow(MARKETS.h1);
+    const hasH2 = inWindow(MARKETS.h2);
+    const hasFull = inWindow(MARKETS.full);
+    if (!hasH1 && hasH2) setViewMarket(MARKETS.h2);
+    else if (!hasH1 && !hasH2 && hasFull) setViewMarket(MARKETS.full);
+    if (hasH1 || hasH2 || hasFull) didPickHalf.current = true;
+  }, [halfEnds.h1EndMinute, halfEnds.h2EndMinute, loading, series, source]);
+
+  useEffect(() => {
+    if (source !== "live") return;
+    const timer = window.setInterval(() => {
+      void load(true);
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, [load, source]);
 
   useEffect(() => {
     setCurrentMatch(match);
@@ -265,6 +310,9 @@ export function MatchExplorer({
     [viewMarket, viewedHalfEnd],
   );
   const scheduleLabel = useMemo(() => {
+    if (source === "live") {
+      return "Live capture · one saved row per match minute";
+    }
     const minutes = snapshotMinutesForMarket(viewMarket, viewedHalfEnd);
     const start = minutes[0] ?? 0;
     const last = minutes[minutes.length - 1] ?? start;
@@ -273,7 +321,7 @@ export function MatchExplorer({
       return `${minutes.length} snapshots · every 5 minutes from ${start}' to ${regularEnd}', plus ${last}' half end`;
     }
     return `${minutes.length} snapshots per half, every 5 minutes from ${start}' to ${last}'`;
-  }, [viewMarket, viewedHalfEnd]);
+  }, [source, viewMarket, viewedHalfEnd]);
 
   const snapshots = useMemo(() => {
     const { min, max } = marketWindow(viewMarket, viewedHalfEnd);
@@ -371,6 +419,41 @@ export function MatchExplorer({
         ) : null}
       </div>
 
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              if (viewMarket === MARKETS.full) setViewMarket(MARKETS.h1);
+              setSource("historical");
+            }}
+            className={`rounded-full px-3 py-1.5 text-sm ${
+              source === "historical"
+                ? "bg-white text-slate-950"
+                : "border border-white/10 text-slate-300"
+            }`}
+          >
+            Historical snapshots
+          </button>
+          <button
+            type="button"
+            onClick={() => setSource("live")}
+            className={`rounded-full px-3 py-1.5 text-sm ${
+              source === "live"
+                ? "bg-amber-300 text-slate-950"
+                : "border border-white/10 text-slate-300"
+            }`}
+          >
+            Live capture
+          </button>
+        </div>
+        <p className="text-xs text-slate-500">
+          {source === "historical"
+            ? "5-minute snapshots from the historical odds endpoint. They are cached after you fetch them."
+            : "Minute rows saved by the live collector for matches you planned. This does not use the historical cache."}
+        </p>
+      </div>
+
       <div className="grid gap-4 rounded-2xl border border-white/10 bg-white/5 p-4 lg:grid-cols-[1fr_auto]">
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="block text-sm">
@@ -388,7 +471,7 @@ export function MatchExplorer({
               ))}
             </select>
           </label>
-          <div className="text-sm">
+          {source === "historical" ? <div className="text-sm">
             <span className="mb-1.5 block text-slate-400">Halves to fetch</span>
             <div className="flex gap-3 pt-2">
               <label className="flex items-center gap-2 text-slate-200">
@@ -410,9 +493,27 @@ export function MatchExplorer({
                 2nd half
               </label>
             </div>
-          </div>
+          </div> : (
+            <p className="self-end text-sm text-slate-400">
+              The bookmaker here filters live rows already saved for this match.
+            </p>
+          )}
         </div>
 
+        {source === "live" ? (
+          <div className="flex flex-col justify-between gap-3 rounded-xl border border-amber-300/30 bg-amber-300/10 p-3">
+            <div className="text-sm">
+              <p className="text-amber-100">Live capture</p>
+              <p className="mt-1 font-mono text-2xl font-semibold text-amber-200">
+                {currentMatch.liveMinutes}{" "}
+                <span className="text-sm font-normal text-slate-400">min saved</span>
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                New minutes show up here while the collector is running. Plan the match from the home page.
+              </p>
+            </div>
+          </div>
+        ) : (
         <div
           className={`flex flex-col justify-between gap-3 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3 ${
             fetching ? "fetch-glow" : ""
@@ -462,6 +563,7 @@ export function MatchExplorer({
             )}
           </button>
         </div>
+        )}
       </div>
 
       {fetching ? (
@@ -502,9 +604,22 @@ export function MatchExplorer({
               ? "bg-white text-slate-950"
               : "border border-white/10 text-slate-300"
           }`}
-        >
+          >
           2nd half chart
         </button>
+        {source === "live" ? (
+          <button
+            type="button"
+            onClick={() => setViewMarket(MARKETS.full)}
+            className={`rounded-full px-3 py-1.5 text-sm ${
+              viewMarket === MARKETS.full
+                ? "bg-white text-slate-950"
+                : "border border-white/10 text-slate-300"
+            }`}
+          >
+            Match totals
+          </button>
+        ) : null}
       </div>
 
       {availableLines.length > 0 ? (
@@ -538,23 +653,28 @@ export function MatchExplorer({
       <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h2 className="text-sm font-semibold text-white">
-            Over odds · {viewMarket === MARKETS.h1 ? "1st half" : "2nd half"}
+            Over odds ·{" "}
+            {viewMarket === MARKETS.h1
+              ? "1st half"
+              : viewMarket === MARKETS.h2
+                ? "2nd half"
+                : "match"}
           </h2>
           <p className="text-xs text-slate-500">{scheduleLabel}</p>
         </div>
         {loading && !fetching ? (
-          <div className="py-16 text-center text-slate-400">Loading cached odds…</div>
+          <div className="py-16 text-center text-slate-400">
+            {source === "live" ? "Loading live capture…" : "Loading historical cache…"}
+          </div>
         ) : fetching && snapshots.length === 0 ? (
           <div className="py-16 text-center text-slate-400">Fetching snapshots…</div>
         ) : snapshots.length === 0 ? (
           <div className="py-16 text-center text-slate-400">
-            {viewedRemaining === 0
-              ? `This bookmaker has no ${
-                  viewMarket === MARKETS.h1 ? "1st" : "2nd"
-                }-half totals in the cached window.`
-              : `No cached ${
-                  viewMarket === MARKETS.h1 ? "1st" : "2nd"
-                }-half odds for this bookmaker. Fetch snapshots to populate the chart.`}
+            {source === "live"
+              ? `No live ${marketPhrase(viewMarket)} for this bookmaker yet.`
+              : viewedRemaining === 0
+              ? `This bookmaker has no ${marketPhrase(viewMarket)} in the historical cache.`
+              : `No historical ${marketPhrase(viewMarket)} for this bookmaker. Fetch snapshots to populate the chart.`}
           </div>
         ) : selectedLines.length === 0 ? (
           <div className="py-16 text-center text-slate-400">
@@ -640,10 +760,14 @@ export function MatchExplorer({
               </tr>
             </thead>
             <tbody>
-              {snapshots.map((snapshot) => (
+              {snapshots.map((snapshot, index) => (
                 <tr
                   key={snapshot.timestamp}
-                  className="border-t border-white/5 font-mono text-slate-200"
+                  className={`border-t border-white/5 font-mono text-slate-200 ${
+                    source === "live" && index === snapshots.length - 1
+                      ? "bg-amber-300/10"
+                      : ""
+                  }`}
                 >
                   <td className="px-3 py-1.5">{formatMinute(snapshot.elapsedMinutes)}</td>
                   {selectedLines.map((line) => {

@@ -32,7 +32,8 @@ function addMinutes(iso: string, minutes: number): string {
 
 function halfEndForMarket(market: MarketKey, halfEnds?: HalfEnds | null): number | null {
   if (!halfEnds) return null;
-  return market === MARKETS.h1 ? halfEnds.h1EndMinute : halfEnds.h2EndMinute;
+  if (market === MARKETS.h1) return halfEnds.h1EndMinute;
+  return halfEnds.h2EndMinute;
 }
 
 export function estimateCredits(input: {

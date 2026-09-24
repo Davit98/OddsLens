@@ -71,6 +71,7 @@ export const BOOKMAKERS = [
 export const DEFAULT_BOOKMAKER = "leovegas";
 
 export const MARKETS = {
+  full: "alternate_totals",
   h1: "alternate_totals_h1",
   h2: "alternate_totals_h2",
 } as const;
@@ -102,9 +103,13 @@ export function snapshotMinutesForMarket(
   market: MarketKey,
   halfEndMinute?: number | null,
 ): number[] {
-  const start = market === MARKETS.h1 ? 0 : HALF_LENGTH_MINUTES;
+  const start = market === MARKETS.h2 ? HALF_LENGTH_MINUTES : 0;
+  const count =
+    market === MARKETS.full
+      ? MATCH_WINDOW_MINUTES / SNAPSHOT_INTERVAL_MINUTES + 1
+      : SNAPSHOTS_PER_HALF;
   const minutes = Array.from(
-    { length: SNAPSHOTS_PER_HALF },
+    { length: count },
     (_, index) => start + index * SNAPSHOT_INTERVAL_MINUTES,
   );
   const extra = resolvedHalfEnd(market, halfEndMinute);
@@ -138,8 +143,8 @@ export function marketWindow(
 ): { min: number; max: number } {
   const slack = SNAPSHOT_INTERVAL_MINUTES / 2;
   const end = resolvedHalfEnd(market, halfEndMinute);
-  if (market === MARKETS.h1) return { min: 0, max: end + slack };
-  return { min: H1_WINDOW_MINUTES - slack, max: end + slack };
+  if (market === MARKETS.h2) return { min: H1_WINDOW_MINUTES - slack, max: end + slack };
+  return { min: 0, max: end + slack };
 }
 
 export function marketAxis(
@@ -147,6 +152,11 @@ export function marketAxis(
   halfEndMinute?: number | null,
 ): { domain: [number, number]; ticks: number[] } {
   const end = resolvedHalfEnd(market, halfEndMinute);
+  if (market === MARKETS.full) {
+    const ticks = [0, 15, 30, 45, 60, 75, MATCH_WINDOW_MINUTES];
+    if (end > MATCH_WINDOW_MINUTES) ticks.push(end);
+    return { domain: [0, end], ticks };
+  }
   if (market === MARKETS.h1) {
     const ticks = [0, 15, 30, H1_WINDOW_MINUTES];
     if (end > H1_WINDOW_MINUTES) ticks.push(end);

@@ -4,8 +4,9 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { LEAGUES, LOOKBACK_OPTIONS, leagueTitle, type LeagueKey, type LookbackKey } from "@/lib/leagues";
 import { formatKickoff, matchStatus } from "@/lib/format";
-import type { Credits, MatchRecord } from "@/lib/types";
+import type { Credits, LiveCandidate, MatchRecord } from "@/lib/types";
 import { HistoryLoadingCard } from "./HistoryLoadingCard";
+import { LiveCollector } from "./LiveCollector";
 import { useCredits } from "./CreditsProvider";
 
 type LeagueFilter = "all" | LeagueKey;
@@ -15,6 +16,9 @@ export function MatchList() {
   const [league, setLeague] = useState<LeagueFilter>("all");
   const [lookback, setLookback] = useState<LookbackKey>("3");
   const [matches, setMatches] = useState<MatchRecord[]>([]);
+  const [liveCounts, setLiveCounts] = useState<Record<string, number>>({});
+  const [plannedIds, setPlannedIds] = useState<Set<string>>(new Set());
+  const [planTick, setPlanTick] = useState(0);
   const [loading, setLoading] = useState(true);
   const [progress, setProgress] = useState(8);
   const [pendingDays, setPendingDays] = useState(0);
@@ -86,6 +90,34 @@ export function MatchList() {
       setLoading(false);
     }
   }, [setCredits]);
+
+  const onWatch = useCallback((rows: LiveCandidate[]) => {
+    setLiveCounts(Object.fromEntries(rows.map((row) => [row.eventId, row.liveMinutes])));
+    setPlannedIds(new Set(rows.map((row) => row.eventId)));
+  }, []);
+
+  const togglePlan = useCallback(async (eventId: string, planned: boolean) => {
+    setPlannedIds((current) => {
+      const next = new Set(current);
+      if (planned) next.add(eventId);
+      else next.delete(eventId);
+      return next;
+    });
+    const response = await fetch("/api/live", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: planned ? "add" : "remove", eventId }),
+    });
+    if (!response.ok) {
+      setPlannedIds((current) => {
+        const next = new Set(current);
+        if (planned) next.delete(eventId);
+        else next.add(eventId);
+        return next;
+      });
+    }
+    setPlanTick((value) => value + 1);
+  }, []);
 
   useEffect(() => {
     void load(league, lookback);
@@ -175,6 +207,8 @@ export function MatchList() {
         ))}
       </div>
 
+      <LiveCollector refreshToken={planTick} onWatch={onWatch} />
+
       {loading ? (
         <HistoryLoadingCard
           extraHistory={lookback !== "3"}
@@ -200,7 +234,13 @@ export function MatchList() {
             </div>
             <div className="grid gap-3 md:grid-cols-2">
               {group.matches.map((match) => (
-                <MatchCard key={match.id} match={match} />
+                <MatchCard
+                  key={match.id}
+                  match={match}
+                  liveMinutes={liveCounts[match.id] ?? match.liveMinutes}
+                  planned={plannedIds.has(match.id)}
+                  onTogglePlan={(next) => void togglePlan(match.id, next)}
+                />
               ))}
             </div>
           </section>
@@ -234,13 +274,21 @@ function FilterChip({
   );
 }
 
-function MatchCard({ match }: { match: MatchRecord }) {
+function MatchCard({
+  match,
+  liveMinutes,
+  planned,
+  onTogglePlan,
+}: {
+  match: MatchRecord;
+  liveMinutes: number;
+  planned: boolean;
+  onTogglePlan: (planned: boolean) => void;
+}) {
   const status = matchStatus(match.commenceTime, match.completed);
   return (
-    <Link
-      href={`/matches/${match.id}`}
-      className="group rounded-2xl border border-white/10 bg-gradient-to-br from-white/10 to-white/5 p-4 transition hover:border-emerald-400/40 hover:bg-white/10"
-    >
+    <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-white/10 to-white/5 p-4 transition hover:border-emerald-400/40">
+      <Link href={`/matches/${match.id}`} className="group block">
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-xs uppercase tracking-[0.16em] text-slate-500">
@@ -261,21 +309,36 @@ function MatchCard({ match }: { match: MatchRecord }) {
           ) : null}
         </div>
       </div>
-      <div className="mt-4 flex items-center justify-between text-xs text-slate-500">
+      </Link>
+      <div className="mt-4 flex items-center justify-between gap-3 text-xs text-slate-500">
         <span>
           {match.cachedSnapshots > 0
-            ? `${match.cachedSnapshots} cached snapshots`
-            : "Not fetched yet"}
+            ? `${match.cachedSnapshots} historical`
+            : "No historical cache"}
+          {liveMinutes > 0 ? ` · ${liveMinutes} live min` : ""}
         </span>
-        {match.cachedBookmakers.length > 0 ? (
-          <span className="rounded-full bg-emerald-400/15 px-2 py-0.5 text-emerald-300">
-            Cached
-          </span>
-        ) : (
-          <span className="text-slate-600">Open to fetch</span>
-        )}
+        <span className="flex items-center gap-2">
+          {status !== "ft" || planned ? (
+            <button
+              type="button"
+              onClick={() => onTogglePlan(!planned)}
+              className={`rounded-full px-2 py-0.5 ${
+                planned
+                  ? "bg-amber-300/20 text-amber-200"
+                  : "border border-white/10 text-slate-300 hover:bg-white/10"
+              }`}
+            >
+              {planned ? "Planned" : "Plan live"}
+            </button>
+          ) : null}
+          {match.cachedBookmakers.length > 0 ? (
+            <span className="rounded-full bg-emerald-400/15 px-2 py-0.5 text-emerald-300">
+              Historical
+            </span>
+          ) : null}
+        </span>
       </div>
-    </Link>
+    </div>
   );
 }
 
