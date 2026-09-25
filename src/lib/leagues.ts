@@ -174,6 +174,210 @@ export function marketAxis(
   return { domain: [H1_WINDOW_MINUTES, end], ticks };
 }
 
+export type LiveClock = {
+  period: 1 | 2;
+  /** Regulation minute: 0–45 in the first half, 45–90 in the second. */
+  minute: number;
+  /** Minutes past 45 or 90. Zero during regulation. */
+  added: number;
+};
+
+const H1_ADDED_KEY = 1_000;
+const H2_KEY = 2_000;
+const H2_ADDED_KEY = 3_000;
+
+export function parseClockDisplay(
+  display?: string | null,
+): { minute: number; added: number } | null {
+  if (!display) return null;
+  const text = display.replace(/[’′]/g, "'").trim();
+  const added = text.match(/^(\d+)\s*'?\s*\+\s*(\d+)\s*'?$/);
+  if (added) return { minute: Number(added[1]), added: Number(added[2]) };
+  const plain = text.match(/^(\d+)\s*'?$/);
+  if (plain) return { minute: Number(plain[1]), added: 0 };
+  return null;
+}
+
+export function liveClockFromParts(
+  period: 1 | 2,
+  minute: number,
+  added: number,
+): LiveClock {
+  if (added > 0) {
+    if (minute >= MATCH_WINDOW_MINUTES) return { period: 2, minute: MATCH_WINDOW_MINUTES, added };
+    return { period: 1, minute: HALF_LENGTH_MINUTES, added };
+  }
+  if (period === 1 && minute > HALF_LENGTH_MINUTES) {
+    return { period: 1, minute: HALF_LENGTH_MINUTES, added: minute - HALF_LENGTH_MINUTES };
+  }
+  if (period === 2 && minute > MATCH_WINDOW_MINUTES) {
+    return { period: 2, minute: MATCH_WINDOW_MINUTES, added: minute - MATCH_WINDOW_MINUTES };
+  }
+  return { period, minute, added: 0 };
+}
+
+export function formatLiveClock(clock: LiveClock): string {
+  if (clock.added > 0) {
+    const base = clock.period === 1 ? HALF_LENGTH_MINUTES : MATCH_WINDOW_MINUTES;
+    return `${base}+${clock.added}`;
+  }
+  return `${clock.minute}'`;
+}
+
+/** Storage key. Sorts as 0…45, 45+1…, 45…90, 90+1… and never collides across halves. */
+export function liveMinuteKey(clock: LiveClock): number {
+  if (clock.period === 1) {
+    return clock.added > 0 ? H1_ADDED_KEY + clock.added : clock.minute;
+  }
+  return clock.added > 0 ? H2_ADDED_KEY + clock.added : H2_KEY + clock.minute;
+}
+
+export function liveClockFromKey(key: number): LiveClock | null {
+  if (key >= H2_ADDED_KEY && key < H2_ADDED_KEY + 100) {
+    const added = key - H2_ADDED_KEY;
+    if (added <= 0) return null;
+    return { period: 2, minute: MATCH_WINDOW_MINUTES, added };
+  }
+  if (key >= H2_KEY && key < H2_ADDED_KEY) {
+    const minute = key - H2_KEY;
+    if (minute < HALF_LENGTH_MINUTES || minute > MATCH_WINDOW_MINUTES) return null;
+    return { period: 2, minute, added: 0 };
+  }
+  if (key > H1_ADDED_KEY && key < H2_KEY) {
+    return { period: 1, minute: HALF_LENGTH_MINUTES, added: key - H1_ADDED_KEY };
+  }
+  if (key >= 0 && key <= HALF_LENGTH_MINUTES) return { period: 1, minute: key, added: 0 };
+  return null;
+}
+
+export function clockFromLegacyRow(
+  elapsed: number,
+  period: number | null,
+  display: string | null,
+): LiveClock {
+  const parsed = parseClockDisplay(display);
+  if (parsed && parsed.added > 0) {
+    return liveClockFromParts(period === 2 ? 2 : 1, parsed.minute, parsed.added);
+  }
+  const inferred: 1 | 2 = period === 2 ? 2 : period === 1 ? 1 : elapsed > HALF_LENGTH_MINUTES ? 2 : 1;
+  return liveClockFromParts(inferred, parsed?.minute ?? elapsed, 0);
+}
+
+export function chartMinuteFor(
+  clock: LiveClock,
+  market: MarketKey,
+  h1Added: number,
+): number | null {
+  if (market === MARKETS.h1) {
+    if (clock.period !== 1) return null;
+    return clock.minute + clock.added;
+  }
+  if (market === MARKETS.h2) {
+    if (clock.period !== 2 || clock.minute < HALF_LENGTH_MINUTES) return null;
+    return clock.minute + clock.added;
+  }
+  if (clock.period === 2 && clock.minute < HALF_LENGTH_MINUTES) return null;
+  if (clock.period === 1) return clock.minute + clock.added;
+  const h1End = HALF_LENGTH_MINUTES + Math.max(0, h1Added);
+  const intoHalf = clock.minute - HALF_LENGTH_MINUTES + clock.added;
+  return h1End + 1 + intoHalf;
+}
+
+export function formatChartMinute(market: MarketKey, minute: number, h1Added = 0): string {
+  if (!Number.isFinite(minute)) return "—";
+  if (market === MARKETS.h1) {
+    if (minute <= HALF_LENGTH_MINUTES) return `${minute}'`;
+    return `45+${minute - HALF_LENGTH_MINUTES}`;
+  }
+  if (market === MARKETS.h2) {
+    if (minute <= MATCH_WINDOW_MINUTES) return `${minute}'`;
+    return `90+${minute - MATCH_WINDOW_MINUTES}`;
+  }
+  const h1End = HALF_LENGTH_MINUTES + Math.max(0, h1Added);
+  if (minute <= h1End) {
+    if (minute <= HALF_LENGTH_MINUTES) return `${minute}'`;
+    return `45+${minute - HALF_LENGTH_MINUTES}`;
+  }
+  const shown = HALF_LENGTH_MINUTES + (minute - (h1End + 1));
+  if (shown <= MATCH_WINDOW_MINUTES) return `${shown}'`;
+  return `90+${shown - MATCH_WINDOW_MINUTES}`;
+}
+
+export function liveChartAxis(
+  market: MarketKey,
+  clocks: LiveClock[],
+): { domain: [number, number]; ticks: number[]; h1Added: number; h2Added: number } {
+  const h1Clocks = market === MARKETS.h2 ? [] : clocks.filter((clock) => clock.period === 1);
+  const h2Clocks =
+    market === MARKETS.h1
+      ? []
+      : clocks.filter((clock) => clock.period === 2 && clock.minute >= HALF_LENGTH_MINUTES);
+  const h1Added = h1Clocks.reduce((max, clock) => Math.max(max, clock.added), 0);
+  const h2Added = h2Clocks.reduce((max, clock) => Math.max(max, clock.added), 0);
+  const ticks: number[] = [];
+  const add = (clock: LiveClock) => {
+    const minute = chartMinuteFor(clock, market, h1Added);
+    if (minute == null || ticks.includes(minute)) return;
+    ticks.push(minute);
+  };
+
+  if (market !== MARKETS.h2) {
+    for (const minute of [0, 15, 30, HALF_LENGTH_MINUTES]) {
+      add({ period: 1, minute, added: 0 });
+    }
+    for (let added = 1; added <= h1Added; added += 1) {
+      add({ period: 1, minute: HALF_LENGTH_MINUTES, added });
+    }
+  }
+  const showSecondHalf = market === MARKETS.h2 || (market === MARKETS.full && h2Clocks.length > 0);
+  if (showSecondHalf) {
+    for (const minute of [HALF_LENGTH_MINUTES, 60, 75, MATCH_WINDOW_MINUTES]) {
+      add({ period: 2, minute, added: 0 });
+    }
+    for (let added = 1; added <= h2Added; added += 1) {
+      add({ period: 2, minute: MATCH_WINDOW_MINUTES, added });
+    }
+  }
+
+  let max =
+    market === MARKETS.h2 ? MATCH_WINDOW_MINUTES + h2Added : HALF_LENGTH_MINUTES + h1Added;
+  if (showSecondHalf && market === MARKETS.full) {
+    max =
+      chartMinuteFor(
+        { period: 2, minute: MATCH_WINDOW_MINUTES, added: h2Added },
+        market,
+        h1Added,
+      ) ?? max;
+  }
+  const min = market === MARKETS.h2 ? HALF_LENGTH_MINUTES : 0;
+  const domainMax = Math.max(min, max);
+  ticks.sort((a, b) => a - b);
+  return {
+    domain: [min, domainMax],
+    ticks: spacedLiveTicks(ticks, (minute) => formatChartMinute(market, minute, h1Added), domainMax - min),
+    h1Added,
+    h2Added,
+  };
+}
+
+function spacedLiveTicks(
+  ticks: number[],
+  labelOf: (minute: number) => string,
+  span: number,
+): number[] {
+  const minGap = Math.max(5, span / 8);
+  const sorted = [...ticks].sort((a, b) => a - b);
+  const kept: number[] = [];
+  const fits = (tick: number) => kept.every((other) => Math.abs(other - tick) >= minGap);
+  const stoppage = sorted.filter((tick) => labelOf(tick).includes("+")).reverse();
+  const regular = sorted.filter((tick) => !labelOf(tick).includes("+"));
+  for (const tick of stoppage) if (fits(tick)) kept.push(tick);
+  for (const tick of regular) if (fits(tick)) kept.push(tick);
+  const first = sorted[0];
+  if (first != null && !kept.includes(first) && fits(first)) kept.push(first);
+  return kept.sort((a, b) => a - b);
+}
+
 export const DEFAULT_LINES = [0.5, 1.5, 2.5, 3.5];
 
 export const LOOKBACK_OPTIONS = [

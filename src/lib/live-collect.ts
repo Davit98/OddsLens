@@ -15,16 +15,20 @@ import {
 import {
   fetchEspnScoreboard,
   matchEspnFixture,
-  parseEspnClockMinute,
   utcDay,
   type EspnFixture,
 } from "./espn";
 import {
   bookmakerRegion,
   DEFAULT_BOOKMAKER,
+  formatLiveClock,
   H1_WINDOW_MINUTES,
+  liveClockFromParts,
+  liveMinuteKey,
   MARKETS,
   MATCH_WINDOW_MINUTES,
+  parseClockDisplay,
+  type LiveClock,
   type MarketKey,
 } from "./leagues";
 import {
@@ -150,15 +154,14 @@ function marketsFrom(response: EventOdds, bookmaker: string, markets: MarketKey[
   });
 }
 
-function marketsForSample(
-  sample: { minute: number; period: number | null },
-  phase: EspnFixture["phase"] | null,
-): MarketKey[] {
-  const firstHalfOver = phase === "halftime" || phase === "ft" || sample.period === 2;
-  const h2Due = firstHalfOver || sample.minute >= H1_WINDOW_MINUTES - H2_LEAD_MINUTES;
+function marketsForClock(clock: LiveClock): MarketKey[] {
   const markets: MarketKey[] = [MARKETS.full];
-  if (!firstHalfOver) markets.push(MARKETS.h1);
-  if (h2Due) markets.push(MARKETS.h2);
+  if (clock.period === 1) markets.push(MARKETS.h1);
+  const h2Lead =
+    clock.period === 1 &&
+    clock.added === 0 &&
+    clock.minute >= H1_WINDOW_MINUTES - H2_LEAD_MINUTES;
+  if (clock.period === 2 || h2Lead) markets.push(MARKETS.h2);
   return markets;
 }
 
@@ -179,31 +182,44 @@ function marketStatus(previous: LiveQuote | undefined, next: SampledMarket): str
   return sameQuote ? "unchanged" : String(next.outcomes.length);
 }
 
+function wallClock(wall: number): LiveClock {
+  if (wall <= H1_WINDOW_MINUTES) return { period: 1, minute: wall, added: 0 };
+  if (wall <= MATCH_WINDOW_MINUTES) return { period: 2, minute: wall, added: 0 };
+  return {
+    period: 2,
+    minute: MATCH_WINDOW_MINUTES,
+    added: wall - MATCH_WINDOW_MINUTES,
+  };
+}
+
+function packedClock(clock: LiveClock): {
+  minute: number;
+  display: string;
+  period: number;
+  clock: LiveClock;
+} {
+  return {
+    minute: liveMinuteKey(clock),
+    display: formatLiveClock(clock),
+    period: clock.period,
+    clock,
+  };
+}
+
 function minuteSample(
   fixture: EspnFixture | null,
   commenceTime: string,
-): { minute: number; display: string; period: number | null } | null {
+): { minute: number; display: string; period: number | null; clock: LiveClock } | null {
   const wall = Math.floor((Date.now() - Date.parse(commenceTime)) / 60_000);
   if (!Number.isFinite(wall) || wall < 0 || wall > LIVE_WINDOW_MINUTES) return null;
-  if (!fixture || fixture.phase === "pre") {
-    return { minute: wall, display: `${wall}'`, period: wall <= H1_WINDOW_MINUTES ? 1 : 2 };
-  }
+  if (!fixture || fixture.phase === "pre") return packedClock(wallClock(wall));
+  // HT/FT clocks are not match minutes. Saving them would overwrite 45' or 90'.
+  if (fixture.phase === "halftime" || fixture.phase === "ft") return null;
 
-  const parsed = parseEspnClockMinute(fixture.displayClock);
-  if (fixture.phase === "halftime") {
-    const minute = parsed ?? H1_WINDOW_MINUTES;
-    return { minute, display: fixture.displayClock ?? "HT", period: 1 };
-  }
-  if (fixture.phase === "ft") {
-    const minute = parsed ?? MATCH_WINDOW_MINUTES;
-    return { minute, display: fixture.displayClock ?? "FT", period: fixture.period ?? 2 };
-  }
-  const minute = parsed ?? wall;
-  return {
-    minute,
-    display: fixture.displayClock ?? `${minute}'`,
-    period: fixture.period,
-  };
+  const parsed = parseClockDisplay(fixture.displayClock);
+  if (!parsed) return packedClock(wallClock(wall));
+  const period: 1 | 2 = fixture.period === 2 ? 2 : 1;
+  return packedClock(liveClockFromParts(period, parsed.minute, parsed.added));
 }
 
 async function loadFixtures(sportKey: string, events: ScoreEvent[]): Promise<EspnFixture[]> {
@@ -299,7 +315,7 @@ async function collectEvent(
   if (!pollDue(pollKey, sample.minute, now)) return false;
 
   const phase = fixture?.phase ?? null;
-  const needed = marketsForSample(sample, phase);
+  const needed = marketsForClock(sample.clock);
   if (getLiveJob()?.status !== "running") return false;
   // Stamp before the request. Recording the finish time pushed the next sample onto the wake-up after next, so every third minute was skipped.
   runtime().lastPolledAt.set(pollKey, now);

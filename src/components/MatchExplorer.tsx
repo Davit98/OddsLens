@@ -18,15 +18,21 @@ import { SnapshotFetchingBanner } from "./SnapshotFetching";
 import { formatKickoff, formatMinute, formatOdds, formatScore } from "@/lib/format";
 import {
   BOOKMAKERS,
+  chartMinuteFor,
   DEFAULT_BOOKMAKER,
   DEFAULT_LINES,
+  formatChartMinute,
   H1_WINDOW_MINUTES,
+  liveChartAxis,
+  liveClockFromParts,
   MARKETS,
   MATCH_WINDOW_MINUTES,
   marketAxis,
   marketWindow,
+  parseClockDisplay,
   snapshotMinutesForMarket,
   leagueTitle,
+  type LiveClock,
   type MarketKey,
 } from "@/lib/leagues";
 import type {
@@ -105,6 +111,9 @@ type LinePrices = { overPrice: number | null; underPrice: number | null };
 type MarketSnapshot = {
   timestamp: string;
   elapsedMinutes: number;
+  chartMinute: number;
+  clockLabel: string;
+  liveClock?: LiveClock;
   prices: Map<number, LinePrices>;
 };
 
@@ -115,6 +124,9 @@ function marketSnapshots(series: SeriesPoint[], market: MarketKey): MarketSnapsh
     const current = byTimestamp.get(row.timestamp) ?? {
       timestamp: row.timestamp,
       elapsedMinutes: row.elapsedMinutes,
+      chartMinute: row.elapsedMinutes,
+      clockLabel: formatMinute(row.elapsedMinutes),
+      liveClock: row.liveClock,
       prices: new Map(),
     };
     if (row.point !== null) {
@@ -125,9 +137,7 @@ function marketSnapshots(series: SeriesPoint[], market: MarketKey): MarketSnapsh
     }
     byTimestamp.set(row.timestamp, current);
   }
-  return [...byTimestamp.values()].sort(
-    (a, b) => a.elapsedMinutes - b.elapsedMinutes,
-  );
+  return [...byTimestamp.values()].sort((a, b) => a.chartMinute - b.chartMinute);
 }
 
 function overAt(
@@ -136,23 +146,34 @@ function overAt(
   settled: Map<number, number>,
 ): number | null {
   const settledAt = settled.get(line);
-  if (settledAt !== undefined && snapshot.elapsedMinutes > settledAt) return null;
+  if (settledAt !== undefined && snapshot.chartMinute > settledAt) return null;
   return snapshot.prices.get(line)?.overPrice ?? null;
 }
 
-function settleTimes(goals: GoalEvent[], market: MarketKey, lines: number[]) {
+function goalClock(goal: GoalEvent): LiveClock | null {
+  const parsed = parseClockDisplay(goal.displayMinute);
+  if (!parsed) return null;
+  return liveClockFromParts(goal.period, parsed.minute, parsed.added);
+}
+
+function settleTimes(
+  goals: GoalEvent[],
+  market: MarketKey,
+  lines: number[],
+  at: (goal: GoalEvent) => number,
+) {
   const halfGoals = goals
     .filter((goal) =>
       market === MARKETS.h1 ? goal.period === 1 : market === MARKETS.h2 ? goal.period === 2 : true,
     )
-    .sort((a, b) => a.elapsedMinutes - b.elapsedMinutes);
+    .sort((a, b) => at(a) - at(b));
   const settled = new Map<number, number>();
   for (const line of lines) {
     let count = 0;
     for (const goal of halfGoals) {
       count += 1;
       if (count > line) {
-        settled.set(line, goal.elapsedMinutes);
+        settled.set(line, at(goal));
         break;
       }
     }
@@ -250,20 +271,20 @@ export function MatchExplorer({
 
   useEffect(() => {
     if (source !== "live" || didPickHalf.current || loading) return;
-    const inWindow = (market: MarketKey) => {
-      const end = market === MARKETS.h1 ? halfEnds.h1EndMinute : halfEnds.h2EndMinute;
-      const { min, max } = marketWindow(market, end);
-      return series.some(
-        (row) => row.market === market && row.elapsedMinutes >= min && row.elapsedMinutes <= max,
+    const hasMarket = (market: MarketKey) =>
+      series.some(
+        (row) =>
+          row.market === market &&
+          row.liveClock != null &&
+          chartMinuteFor(row.liveClock, market, 0) != null,
       );
-    };
-    const hasH1 = inWindow(MARKETS.h1);
-    const hasH2 = inWindow(MARKETS.h2);
-    const hasFull = inWindow(MARKETS.full);
+    const hasH1 = hasMarket(MARKETS.h1);
+    const hasH2 = hasMarket(MARKETS.h2);
+    const hasFull = hasMarket(MARKETS.full);
     if (!hasH1 && hasH2) setViewMarket(MARKETS.h2);
     else if (!hasH1 && !hasH2 && hasFull) setViewMarket(MARKETS.full);
     if (hasH1 || hasH2 || hasFull) didPickHalf.current = true;
-  }, [halfEnds.h1EndMinute, halfEnds.h2EndMinute, loading, series, source]);
+  }, [loading, series, source]);
 
   useEffect(() => {
     if (source !== "live") return;
@@ -298,20 +319,48 @@ export function MatchExplorer({
     });
   }, [availableLines]);
 
-  const { halfGoals, settled } = useMemo(
-    () => settleTimes(goals, viewMarket, selectedLines),
-    [goals, selectedLines, viewMarket],
-  );
-
   const viewedHalfEnd =
     viewMarket === MARKETS.h1 ? halfEnds.h1EndMinute : halfEnds.h2EndMinute;
+  const liveAxis = useMemo(() => {
+    if (source !== "live") return null;
+    const clocks = marketSnapshots(series, viewMarket)
+      .map((snapshot) => snapshot.liveClock)
+      .filter((clock): clock is LiveClock => clock != null);
+    return liveChartAxis(viewMarket, clocks);
+  }, [series, source, viewMarket]);
   const axis = useMemo(
-    () => marketAxis(viewMarket, viewedHalfEnd),
-    [viewMarket, viewedHalfEnd],
+    () => liveAxis ?? marketAxis(viewMarket, viewedHalfEnd),
+    [liveAxis, viewMarket, viewedHalfEnd],
+  );
+  const minuteOfGoal = useCallback(
+    (goal: GoalEvent) => {
+      if (!liveAxis) return goal.elapsedMinutes;
+      const clock = goalClock(goal);
+      if (!clock) return goal.elapsedMinutes;
+      return chartMinuteFor(clock, viewMarket, liveAxis.h1Added) ?? goal.elapsedMinutes;
+    },
+    [liveAxis, viewMarket],
+  );
+  const { halfGoals, settled } = useMemo(
+    () => settleTimes(goals, viewMarket, selectedLines, minuteOfGoal),
+    [goals, minuteOfGoal, selectedLines, viewMarket],
   );
   const scheduleLabel = useMemo(() => {
-    if (source === "live") {
-      return "Live capture · one saved row per match minute";
+    if (source === "live" && liveAxis) {
+      if (viewMarket === MARKETS.h1) {
+        const stoppage = liveAxis.h1Added > 0 ? `, then 45+1 through 45+${liveAxis.h1Added}` : "";
+        return `Every minute from 0' through 45'${stoppage}`;
+      }
+      if (viewMarket === MARKETS.h2) {
+        const stoppage = liveAxis.h2Added > 0 ? `, then 90+1 through 90+${liveAxis.h2Added}` : "";
+        return `Every minute from 45' through 90'${stoppage}`;
+      }
+      const h1Stop = liveAxis.h1Added > 0 ? `, 45+1 through 45+${liveAxis.h1Added}` : "";
+      const h2 =
+        liveAxis.domain[1] > 45 + liveAxis.h1Added
+          ? `, then 45' through 90'${liveAxis.h2Added > 0 ? ` and 90+1 through 90+${liveAxis.h2Added}` : ""}`
+          : "";
+      return `Every minute from 0' through 45'${h1Stop}${h2}`;
     }
     const minutes = snapshotMinutesForMarket(viewMarket, viewedHalfEnd);
     const start = minutes[0] ?? 0;
@@ -321,20 +370,41 @@ export function MatchExplorer({
       return `${minutes.length} snapshots · every 5 minutes from ${start}' to ${regularEnd}', plus ${last}' half end`;
     }
     return `${minutes.length} snapshots per half, every 5 minutes from ${start}' to ${last}'`;
-  }, [source, viewMarket, viewedHalfEnd]);
+  }, [liveAxis, source, viewMarket, viewedHalfEnd]);
 
   const snapshots = useMemo(() => {
+    const rows = marketSnapshots(series, viewMarket);
+    if (source === "live" && liveAxis) {
+      return rows
+        .flatMap((snapshot) => {
+          if (!snapshot.liveClock) return [];
+          const chartMinute = chartMinuteFor(snapshot.liveClock, viewMarket, liveAxis.h1Added);
+          if (chartMinute == null) return [];
+          return [
+            {
+              ...snapshot,
+              chartMinute,
+              clockLabel: formatChartMinute(viewMarket, chartMinute, liveAxis.h1Added),
+            },
+          ];
+        })
+        .sort((a, b) => a.chartMinute - b.chartMinute);
+    }
     const { min, max } = marketWindow(viewMarket, viewedHalfEnd);
-    return marketSnapshots(series, viewMarket).filter(
-      (snapshot) => snapshot.elapsedMinutes >= min && snapshot.elapsedMinutes <= max,
-    );
-  }, [series, viewMarket, viewedHalfEnd]);
+    return rows
+      .filter((snapshot) => snapshot.elapsedMinutes >= min && snapshot.elapsedMinutes <= max)
+      .map((snapshot) => ({
+        ...snapshot,
+        chartMinute: snapshot.elapsedMinutes,
+        clockLabel: formatMinute(snapshot.elapsedMinutes),
+      }));
+  }, [liveAxis, series, source, viewMarket, viewedHalfEnd]);
 
   const chartRows = useMemo(
     () =>
       snapshots.map((snapshot) => {
         const row: Record<string, number | string | null> = {
-          minute: Math.round(snapshot.elapsedMinutes * 10) / 10,
+          minute: Math.round(snapshot.chartMinute * 10) / 10,
         };
         for (const line of selectedLines) {
           row[`O${line}`] = overAt(snapshot, line, settled);
@@ -683,16 +753,22 @@ export function MatchExplorer({
         ) : (
           <div className="h-[360px]">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartRows} margin={{ top: 24, right: 16, left: 0, bottom: 8 }}>
+              <LineChart data={chartRows} margin={{ top: 24, right: source === "live" ? 28 : 16, left: 0, bottom: 8 }}>
                 <CartesianGrid stroke="rgba(255,255,255,0.06)" />
                 <XAxis
                   type="number"
                   dataKey="minute"
                   domain={axis.domain}
                   ticks={axis.ticks}
+                  interval={0}
                   allowDataOverflow
                   stroke="#94a3b8"
-                  tickFormatter={(value) => formatMinute(Number(value))}
+                  tick={{ fontSize: 11, fill: "#94a3b8" }}
+                  tickFormatter={(value) =>
+                    source === "live"
+                      ? formatChartMinute(viewMarket, Number(value), liveAxis?.h1Added ?? 0)
+                      : formatMinute(Number(value))
+                  }
                 />
                 <YAxis stroke="#94a3b8" domain={["auto", "auto"]} />
                 <Tooltip
@@ -702,27 +778,39 @@ export function MatchExplorer({
                     border: "1px solid rgba(255,255,255,0.1)",
                     borderRadius: 12,
                   }}
-                  labelFormatter={(value) => `Elapsed ${formatMinute(Number(value))}`}
+                  labelFormatter={(value) =>
+                    source === "live"
+                      ? formatChartMinute(viewMarket, Number(value), liveAxis?.h1Added ?? 0)
+                      : `Elapsed ${formatMinute(Number(value))}`
+                  }
                   formatter={(value, name) => [
                     value == null || value === "" ? "—" : Number(value).toFixed(2),
                     name,
                   ]}
                 />
                 <Legend />
-                {halfGoals.map((goal) => (
-                  <ReferenceLine
-                    key={`${goal.wallclock}-${goal.displayMinute}`}
-                    x={goal.elapsedMinutes}
-                    stroke="#fb7185"
-                    strokeDasharray="4 4"
-                    label={{
-                      value: `${goal.displayMinute} ${lastName(goal.scorer) ?? goal.team}`,
-                      fill: "#fda4af",
-                      fontSize: 11,
-                      position: "top",
-                    }}
-                  />
-                ))}
+                {halfGoals.map((goal) => {
+                  const clock = source === "live" ? goalClock(goal) : null;
+                  const x =
+                    clock && liveAxis
+                      ? chartMinuteFor(clock, viewMarket, liveAxis.h1Added)
+                      : goal.elapsedMinutes;
+                  if (x == null) return null;
+                  return (
+                    <ReferenceLine
+                      key={`${goal.wallclock}-${goal.displayMinute}`}
+                      x={x}
+                      stroke="#fb7185"
+                      strokeDasharray="4 4"
+                      label={{
+                        value: `${goal.displayMinute} ${lastName(goal.scorer) ?? goal.team}`,
+                        fill: "#fda4af",
+                        fontSize: 11,
+                        position: "top",
+                      }}
+                    />
+                  );
+                })}
                 {selectedLines.map((line, index) => (
                   <Line
                     key={line}
@@ -769,7 +857,7 @@ export function MatchExplorer({
                       : ""
                   }`}
                 >
-                  <td className="px-3 py-1.5">{formatMinute(snapshot.elapsedMinutes)}</td>
+                  <td className="px-3 py-1.5">{snapshot.clockLabel}</td>
                   {selectedLines.map((line) => {
                     const price = overAt(snapshot, line, settled);
                     return (

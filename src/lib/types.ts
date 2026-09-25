@@ -68,6 +68,11 @@ export type OddsPoint = {
   point: number | null;
   overPrice: number | null;
   underPrice: number | null;
+  liveClock?: {
+    period: 1 | 2;
+    minute: number;
+    added: number;
+  };
 };
 
 export type GoalEvent = {

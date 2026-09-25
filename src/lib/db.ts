@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { clockFromLegacyRow, liveClockFromKey, liveMinuteKey } from "./leagues";
 import type {
   Credits,
   GoalEvent,
@@ -229,7 +230,62 @@ export function getDb(): Database.Database {
   ensureColumn(g.__oddslensDb, "match_espn", "h1_end_minute", "REAL");
   ensureColumn(g.__oddslensDb, "match_espn", "h2_end_minute", "REAL");
   ensureColumn(g.__oddslensDb, "live_snapshots", "last_update", "TEXT");
+  migrateLiveMinuteKeys(g.__oddslensDb);
   return g.__oddslensDb;
+}
+
+function migrateLiveMinuteKeys(db: Database.Database): void {
+  const done = db.prepare("SELECT value FROM meta WHERE key = ?").get("live_minute_keys_v2") as
+    | { value: string }
+    | undefined;
+  if (done) return;
+
+  const rows = db
+    .prepare(
+      `SELECT id, event_id, bookmaker, market, elapsed_minute, period, display_clock, captured_at
+       FROM live_snapshots
+       WHERE elapsed_minute < 1000
+       ORDER BY captured_at DESC, id DESC`,
+    )
+    .all() as Array<{
+    id: number;
+    event_id: string;
+    bookmaker: string;
+    market: string;
+    elapsed_minute: number;
+    period: number | null;
+    display_clock: string | null;
+    captured_at: string;
+  }>;
+
+  const update = db.prepare("UPDATE live_snapshots SET elapsed_minute = ? WHERE id = ?");
+  const clash = db.prepare(
+    `SELECT id FROM live_snapshots
+     WHERE event_id = ? AND bookmaker = ? AND market = ? AND elapsed_minute = ? AND id != ?`,
+  );
+  const removeOdds = db.prepare("DELETE FROM live_odds WHERE snapshot_id = ?");
+  const removeSnap = db.prepare("DELETE FROM live_snapshots WHERE id = ?");
+
+  const tx = db.transaction(() => {
+    for (const row of rows) {
+      const key = liveMinuteKey(clockFromLegacyRow(row.elapsed_minute, row.period, row.display_clock));
+      if (key === row.elapsed_minute) continue;
+      const existing = clash.get(row.event_id, row.bookmaker, row.market, key, row.id) as
+        | { id: number }
+        | undefined;
+      if (existing) {
+        removeOdds.run(row.id);
+        removeSnap.run(row.id);
+        continue;
+      }
+      update.run(key, row.id);
+    }
+    db.prepare(
+      `INSERT INTO meta (key, value) VALUES ('live_minute_keys_v2', '1')
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ).run();
+  });
+  tx();
 }
 
 function ensureColumn(
@@ -989,7 +1045,8 @@ export function getLiveOddsSeries(input: {
 }): OddsPoint[] {
   const rows = getDb()
     .prepare(
-      `SELECT s.captured_at, s.elapsed_minute, o.point, o.over_price, o.under_price
+      `SELECT s.captured_at, s.elapsed_minute, s.period, s.display_clock,
+              o.point, o.over_price, o.under_price
        FROM live_snapshots s
        LEFT JOIN live_odds o ON o.snapshot_id = s.id
        WHERE s.event_id = ? AND s.bookmaker = ? AND s.market = ?
@@ -998,6 +1055,8 @@ export function getLiveOddsSeries(input: {
     .all(input.eventId, input.bookmaker, input.market) as {
     captured_at: string;
     elapsed_minute: number;
+    period: number | null;
+    display_clock: string | null;
     point: number | null;
     over_price: number | null;
     under_price: number | null;
@@ -1009,6 +1068,9 @@ export function getLiveOddsSeries(input: {
     point: row.point,
     overPrice: row.over_price,
     underPrice: row.under_price,
+    liveClock:
+      liveClockFromKey(row.elapsed_minute) ??
+      clockFromLegacyRow(row.elapsed_minute, row.period, row.display_clock),
   }));
 }
 

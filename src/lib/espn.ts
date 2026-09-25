@@ -1,4 +1,9 @@
-import { ESPN_LEAGUES, H1_WINDOW_MINUTES, MATCH_WINDOW_MINUTES } from "./leagues";
+import {
+  ESPN_LEAGUES,
+  H1_WINDOW_MINUTES,
+  MATCH_WINDOW_MINUTES,
+  parseClockDisplay,
+} from "./leagues";
 import type { GoalEvent, HalfEnds, MatchRecord } from "./types";
 
 const ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer";
@@ -279,13 +284,9 @@ function elapsedMinutesOf(
 }
 
 export function parseEspnClockMinute(display?: string | null): number | null {
-  if (!display) return null;
-  const text = display.replace(/[’′]/g, "'").trim();
-  const added = text.match(/^(\d+)\s*'?\s*\+\s*(\d+)\s*'?$/);
-  if (added) return Number(added[1]) + Number(added[2]);
-  const plain = text.match(/^(\d+)\s*'?$/);
-  if (plain) return Number(plain[1]);
-  return null;
+  const clock = parseClockDisplay(display);
+  if (!clock) return null;
+  return clock.minute + clock.added;
 }
 
 function halfEndsFromEspn(
