@@ -38,7 +38,10 @@ import {
 import type { Credits, LiveCandidate, LiveFeedRow, LiveJob, MatchRecord } from "./types";
 
 const TICK_MS = 30_000;
-const POLL_INTERVAL_MS = 60_000;
+// A frozen clock (halftime) is refreshed on the second wake-up, not the first.
+const SAME_MINUTE_MS = 45_000;
+// Keeps a follow-up tick from billing the same minute twice. Still shorter than the wake-up, so a failed minute is retried on the next tick.
+const MIN_GAP_MS = 20_000;
 const REQUEST_GAP_MS = 200;
 const LIVE_WINDOW_MINUTES = 150;
 const H2_LEAD_MINUTES = 5;
@@ -54,8 +57,10 @@ type MarketCatalog = {
 type Runtime = {
   timer: ReturnType<typeof setInterval> | null;
   ticking: boolean;
+  pending: boolean;
   tick: () => Promise<void>;
   lastPolledAt: Map<string, number>;
+  lastMinute: Map<string, number>;
   marketCatalog: Map<string, MarketCatalog>;
 };
 
@@ -67,14 +72,27 @@ function runtime(): Runtime {
     g.__oddslensLive = {
       timer: null,
       ticking: false,
+      pending: false,
       tick: async () => {},
       lastPolledAt: new Map(),
+      lastMinute: new Map(),
       marketCatalog: new Map(),
     };
   }
   if (!g.__oddslensLive.lastPolledAt) g.__oddslensLive.lastPolledAt = new Map();
+  if (!g.__oddslensLive.lastMinute) g.__oddslensLive.lastMinute = new Map();
   if (!g.__oddslensLive.marketCatalog) g.__oddslensLive.marketCatalog = new Map();
   return g.__oddslensLive;
+}
+
+function pollDue(pollKey: string, minute: number, now: number): boolean {
+  const state = runtime();
+  const polledAt = state.lastPolledAt.get(pollKey) ?? 0;
+  const elapsed = now - polledAt;
+  if (polledAt > 0 && elapsed < MIN_GAP_MS) return false;
+  const lastMinute = state.lastMinute.get(pollKey);
+  if (lastMinute === undefined || lastMinute !== minute) return true;
+  return elapsed >= SAME_MINUTE_MS;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -277,12 +295,14 @@ async function collectEvent(
   if (!sample) return false;
 
   const pollKey = `${event.id}:${job.bookmaker}`;
-  const polledAt = runtime().lastPolledAt.get(pollKey) ?? 0;
-  if (Date.now() - polledAt < POLL_INTERVAL_MS) return false;
+  const now = Date.now();
+  if (!pollDue(pollKey, sample.minute, now)) return false;
 
   const phase = fixture?.phase ?? null;
   const needed = marketsForSample(sample, phase);
   if (getLiveJob()?.status !== "running") return false;
+  // Stamp before the request. Recording the finish time pushed the next sample onto the wake-up after next, so every third minute was skipped.
+  runtime().lastPolledAt.set(pollKey, now);
 
   let offered: Set<string>;
   try {
@@ -298,7 +318,7 @@ async function collectEvent(
   }
   const requested = needed.filter((market) => offered.has(market));
   if (requested.length === 0) {
-    runtime().lastPolledAt.set(pollKey, Date.now());
+    runtime().lastMinute.set(pollKey, sample.minute);
     console.info(
       `[live] ${event.home_team} vs ${event.away_team} ${sample.display} ${job.bookmaker} has no advertised half totals`,
     );
@@ -315,7 +335,6 @@ async function collectEvent(
     markets: requested.join(","),
   });
   pace.last = Date.now();
-  runtime().lastPolledAt.set(pollKey, pace.last);
 
   const previous = latestLiveQuotes(event.id, job.bookmaker);
   const markets = marketsFrom(response, job.bookmaker, requested);
@@ -333,6 +352,7 @@ async function collectEvent(
       markets: changed,
     });
   }
+  runtime().lastMinute.set(pollKey, sample.minute);
 
   const summary = markets
     .map((market) => `${market.market}=${marketStatus(previous.get(market.market), market)}`)
@@ -427,12 +447,19 @@ async function runTick(): Promise<void> {
 
 export async function tickLiveJob(): Promise<void> {
   const current = runtime();
-  if (current.ticking) return;
+  if (current.ticking) {
+    current.pending = true;
+    return;
+  }
   current.ticking = true;
   try {
     await runTick();
   } finally {
     current.ticking = false;
+    if (current.pending) {
+      current.pending = false;
+      if (getLiveJob()?.status === "running") void current.tick();
+    }
   }
 }
 

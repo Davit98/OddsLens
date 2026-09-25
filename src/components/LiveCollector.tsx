@@ -232,7 +232,7 @@ export function LiveCollector({
         <div id="live-minute-capture">
           <p className="mt-3 max-w-2xl text-sm text-slate-400">
             Pick matches from any competition. Once the collector is running, each selected
-            game is polled once a minute from kickoff. The first check spends 1 credit to see
+            game is saved for every match minute from kickoff. The first check spends 1 credit to see
             which half totals that book is offering, and only those markets are polled. A
             missing line is saved as suspended and checked again next minute. Leave the server
             running; closing this tab does not stop it.
