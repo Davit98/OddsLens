@@ -1,8 +1,5 @@
 import type { Metadata } from "next";
 import { DM_Sans, JetBrains_Mono } from "next/font/google";
-import { BrowseFiltersProvider } from "@/components/BrowseFilters";
-import { CreditsProvider } from "@/components/CreditsProvider";
-import { Header } from "@/components/Header";
 import "./globals.css";
 
 const sans = DM_Sans({
@@ -27,14 +24,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${sans.className} ${mono.variable} antialiased`}>
-        <CreditsProvider>
-          <BrowseFiltersProvider>
-            <Header />
-            <main className="mx-auto max-w-6xl px-4 py-8">{children}</main>
-          </BrowseFiltersProvider>
-        </CreditsProvider>
-      </body>
+      <body className={`${sans.className} ${mono.variable} antialiased`}>{children}</body>
     </html>
   );
 }

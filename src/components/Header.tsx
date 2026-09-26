@@ -14,7 +14,7 @@ export function Header() {
 
   return (
     <header className="sticky top-0 z-20 border-b border-white/10 bg-[#081018]/90 backdrop-blur">
-      <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3">
+      <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
         <Link href="/" className="flex items-center gap-2.5">
           <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-400/15 ring-1 ring-emerald-400/40">
             <span className="h-3 w-3 rounded-full bg-emerald-400 shadow-[0_0_12px_#34d399]" />
@@ -54,6 +54,17 @@ export function Header() {
               {formatNumber(credits?.used)}
             </span>
           </div>
+          <button
+            type="button"
+            onClick={() => {
+              void fetch("/api/auth/logout", { method: "POST" }).finally(() => {
+                window.location.assign("/login");
+              });
+            }}
+            className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-slate-300 transition hover:border-white/20 hover:text-white"
+          >
+            Sign out
+          </button>
         </div>
       </div>
     </header>
