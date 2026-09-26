@@ -15,6 +15,7 @@ import {
 } from "recharts";
 import { useCredits } from "./CreditsProvider";
 import { SnapshotFetchingBanner } from "./SnapshotFetching";
+import { downloadOddsWorkbook, type OddsSheet } from "@/lib/excel-odds";
 import { formatKickoff, formatMinute, formatOdds, formatScore } from "@/lib/format";
 import {
   BOOKMAKERS,
@@ -181,6 +182,105 @@ function settleTimes(
   return { halfGoals, settled };
 }
 
+const EXPORT_SHEETS: Array<{ market: MarketKey; name: string; liveOnly: boolean }> = [
+  { market: MARKETS.h1, name: "1st half chart", liveOnly: false },
+  { market: MARKETS.h2, name: "2nd half chart", liveOnly: false },
+  { market: MARKETS.full, name: "Match totals", liveOnly: true },
+];
+
+function buildChartSnapshots(
+  series: SeriesPoint[],
+  market: MarketKey,
+  source: OddsSource,
+  halfEndMinute: number | null,
+): MarketSnapshot[] {
+  const rows = marketSnapshots(series, market);
+  if (source === "live") {
+    const clocks = rows
+      .map((snapshot) => snapshot.liveClock)
+      .filter((clock): clock is LiveClock => clock != null);
+    const axis = liveChartAxis(market, clocks);
+    return rows
+      .flatMap((snapshot) => {
+        if (!snapshot.liveClock) return [];
+        const chartMinute = chartMinuteFor(snapshot.liveClock, market, axis.h1Added);
+        if (chartMinute == null) return [];
+        return [
+          {
+            ...snapshot,
+            chartMinute,
+            clockLabel: formatChartMinute(market, chartMinute, axis.h1Added),
+          },
+        ];
+      })
+      .sort((a, b) => a.chartMinute - b.chartMinute);
+  }
+  const { min, max } = marketWindow(market, halfEndMinute);
+  return rows
+    .filter((snapshot) => snapshot.elapsedMinutes >= min && snapshot.elapsedMinutes <= max)
+    .map((snapshot) => ({
+      ...snapshot,
+      chartMinute: snapshot.elapsedMinutes,
+      clockLabel: formatMinute(snapshot.elapsedMinutes),
+    }));
+}
+
+function linesForMarket(series: SeriesPoint[], market: MarketKey): number[] {
+  const points = new Set<number>();
+  for (const row of series) {
+    if (row.market === market && row.point !== null) points.add(row.point);
+  }
+  return [...points].sort((a, b) => a - b);
+}
+
+function halfEndFor(market: MarketKey, halfEnds: HalfEnds): number | null {
+  if (market === MARKETS.h1) return halfEnds.h1EndMinute;
+  if (market === MARKETS.h2) return halfEnds.h2EndMinute;
+  return null;
+}
+
+function filePart(value: string): string {
+  const cleaned = value
+    .normalize("NFKD")
+    .replace(/[^\w\s-]+/g, "")
+    .trim()
+    .replace(/\s+/g, "-");
+  return cleaned || "match";
+}
+
+function oddsSheet(
+  series: SeriesPoint[],
+  market: MarketKey,
+  source: OddsSource,
+  halfEnds: HalfEnds,
+  goals: GoalEvent[],
+  name: string,
+): OddsSheet | null {
+  const snapshots = buildChartSnapshots(series, market, source, halfEndFor(market, halfEnds));
+  if (snapshots.length === 0) return null;
+  const lines = linesForMarket(series, market);
+  const clocks = snapshots
+    .map((snapshot) => snapshot.liveClock)
+    .filter((clock): clock is LiveClock => clock != null);
+  const h1Added = source === "live" ? liveChartAxis(market, clocks).h1Added : 0;
+  const { settled } = settleTimes(goals, market, lines, (goal) => {
+    if (source !== "live") return goal.elapsedMinutes;
+    const clock = goalClock(goal);
+    if (!clock) return goal.elapsedMinutes;
+    return chartMinuteFor(clock, market, h1Added) ?? goal.elapsedMinutes;
+  });
+  return {
+    name,
+    rows: [
+      ["Minute", ...lines.map((line) => `Over ${line}`)],
+      ...snapshots.map((snapshot) => [
+        snapshot.clockLabel,
+        ...lines.map((line) => overAt(snapshot, line, settled)),
+      ]),
+    ],
+  };
+}
+
 export function MatchExplorer({
   match,
   initialGoals = [],
@@ -210,6 +310,7 @@ export function MatchExplorer({
   const [fetching, setFetching] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   const selectedMarkets = useMemo(() => {
     const markets: MarketKey[] = [];
@@ -372,33 +473,20 @@ export function MatchExplorer({
     return `${minutes.length} snapshots per half, every 5 minutes from ${start}' to ${last}'`;
   }, [liveAxis, source, viewMarket, viewedHalfEnd]);
 
-  const snapshots = useMemo(() => {
-    const rows = marketSnapshots(series, viewMarket);
-    if (source === "live" && liveAxis) {
-      return rows
-        .flatMap((snapshot) => {
-          if (!snapshot.liveClock) return [];
-          const chartMinute = chartMinuteFor(snapshot.liveClock, viewMarket, liveAxis.h1Added);
-          if (chartMinute == null) return [];
-          return [
-            {
-              ...snapshot,
-              chartMinute,
-              clockLabel: formatChartMinute(viewMarket, chartMinute, liveAxis.h1Added),
-            },
-          ];
-        })
-        .sort((a, b) => a.chartMinute - b.chartMinute);
-    }
-    const { min, max } = marketWindow(viewMarket, viewedHalfEnd);
-    return rows
-      .filter((snapshot) => snapshot.elapsedMinutes >= min && snapshot.elapsedMinutes <= max)
-      .map((snapshot) => ({
-        ...snapshot,
-        chartMinute: snapshot.elapsedMinutes,
-        clockLabel: formatMinute(snapshot.elapsedMinutes),
-      }));
-  }, [liveAxis, series, source, viewMarket, viewedHalfEnd]);
+  const snapshots = useMemo(
+    () => buildChartSnapshots(series, viewMarket, source, viewedHalfEnd),
+    [series, source, viewMarket, viewedHalfEnd],
+  );
+
+  const exportSheets = useMemo(
+    () =>
+      EXPORT_SHEETS.flatMap((sheet) => {
+        if (sheet.liveOnly && source !== "live") return [];
+        const built = oddsSheet(series, sheet.market, source, halfEnds, goals, sheet.name);
+        return built ? [built] : [];
+      }),
+    [goals, halfEnds, series, source],
+  );
 
   const chartRows = useMemo(
     () =>
@@ -413,6 +501,25 @@ export function MatchExplorer({
       }),
     [selectedLines, settled, snapshots],
   );
+
+  async function handleDownload() {
+    if (exportSheets.length === 0 || exporting) return;
+    setExporting(true);
+    setError(null);
+    try {
+      const book =
+        BOOKMAKERS.find((item) => item.key === bookmaker)?.title ?? bookmaker;
+      const label = source === "live" ? "live" : "historical";
+      await downloadOddsWorkbook(
+        exportSheets,
+        `${filePart(currentMatch.homeTeam)}-vs-${filePart(currentMatch.awayTeam)}-${label}-${filePart(book)}.xlsx`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not download Excel");
+    } finally {
+      setExporting(false);
+    }
+  }
 
   async function handleFetch() {
     if (selectedMarkets.length === 0) return;
@@ -654,7 +761,8 @@ export function MatchExplorer({
         </p>
       ) : null}
 
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap gap-2">
         <button
           type="button"
           onClick={() => setViewMarket(MARKETS.h1)}
@@ -690,6 +798,20 @@ export function MatchExplorer({
             Match totals
           </button>
         ) : null}
+        </div>
+        <button
+          type="button"
+          onClick={() => void handleDownload()}
+          disabled={exporting || loading || exportSheets.length === 0}
+          title={
+            source === "live"
+              ? "Downloads 1st half chart, 2nd half chart, and Match totals as separate sheets"
+              : "Downloads 1st half chart and 2nd half chart as separate sheets"
+          }
+          className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1.5 text-sm font-medium text-emerald-200 hover:bg-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {exporting ? "Preparing…" : "Download Excel"}
+        </button>
       </div>
 
       {availableLines.length > 0 ? (
