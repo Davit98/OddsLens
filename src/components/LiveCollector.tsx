@@ -2,7 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useCredits } from "./CreditsProvider";
-import { formatKickoff, formatScore, matchStatus } from "@/lib/format";
+import {
+  compareGroupsSoonestFirst,
+  compareMatchesSoonestFirst,
+  formatKickoff,
+  formatScore,
+  matchStatus,
+} from "@/lib/format";
 import { BOOKMAKERS, DEFAULT_BOOKMAKER, LEAGUES, leagueTitle } from "@/lib/leagues";
 import type { Credits, LiveCandidate, LiveFeedRow, LiveJob } from "@/lib/types";
 import type { LeagueFilter } from "./BrowseFilters";
@@ -154,9 +160,12 @@ export function LiveCollector({
   const groups = LEAGUES.filter((item) => league === "all" || item.key === league)
     .map((item) => ({
       ...item,
-      matches: visible.filter((match) => match.sportKey === item.key),
+      matches: visible
+        .filter((match) => match.sportKey === item.key)
+        .sort(compareMatchesSoonestFirst),
     }))
-    .filter((group) => group.matches.length > 0);
+    .filter((group) => group.matches.length > 0)
+    .sort((a, b) => compareGroupsSoonestFirst(a.matches, b.matches));
 
   const collapsedStatus = job
     ? `${running ? "Running" : "Stopped"} · ${planned.length} selected`

@@ -403,7 +403,7 @@ export function listMatches(sportKey?: string, commenceFrom?: string): MatchReco
     FROM matches m
     WHERE m.commence_time >= ?
       ${sportKey ? "AND m.sport_key = ?" : ""}
-    ORDER BY m.commence_time DESC
+    ORDER BY m.commence_time ASC
   `;
   const rows = (
     sportKey

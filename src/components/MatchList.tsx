@@ -3,7 +3,12 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { LEAGUES, LOOKBACK_OPTIONS, leagueTitle, type LookbackKey } from "@/lib/leagues";
-import { formatKickoff, matchStatus } from "@/lib/format";
+import {
+  compareGroupsSoonestFirst,
+  compareMatchesSoonestFirst,
+  formatKickoff,
+  matchStatus,
+} from "@/lib/format";
 import type { Credits, LiveCandidate, MatchRecord } from "@/lib/types";
 import { useBrowseFilters, type LeagueFilter } from "./BrowseFilters";
 import { HistoryLoadingCard } from "./HistoryLoadingCard";
@@ -165,21 +170,12 @@ export function MatchList() {
       byLeague.set(match.sportKey, list);
     }
 
-    const rank = (match: MatchRecord) => {
-      const status = matchStatus(match.commenceTime, match.completed);
-      if (status === "live") return 0;
-      if (status === "ft") return 1;
-      return 2;
-    };
-
-    return LEAGUES.filter((item) => byLeague.has(item.key)).map((item) => ({
-      ...item,
-      matches: [...(byLeague.get(item.key) ?? [])].sort((a, b) => {
-        const rankDiff = rank(a) - rank(b);
-        if (rankDiff !== 0) return rankDiff;
-        return Date.parse(b.commenceTime) - Date.parse(a.commenceTime);
-      }),
-    }));
+    return LEAGUES.filter((item) => byLeague.has(item.key))
+      .map((item) => ({
+        ...item,
+        matches: [...(byLeague.get(item.key) ?? [])].sort(compareMatchesSoonestFirst),
+      }))
+      .sort((a, b) => compareGroupsSoonestFirst(a.matches, b.matches));
   }, [league, matches]);
 
   return (
