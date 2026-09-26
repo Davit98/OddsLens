@@ -11,6 +11,7 @@ import {
 } from "@/lib/format";
 import type { Credits, LiveCandidate, MatchRecord } from "@/lib/types";
 import { useBrowseFilters, type LeagueFilter } from "./BrowseFilters";
+import { CapturedMatches } from "./CapturedMatches";
 import { HistoryLoadingCard } from "./HistoryLoadingCard";
 import { LiveCollector } from "./LiveCollector";
 import { useCredits } from "./CreditsProvider";
@@ -222,6 +223,8 @@ export function MatchList() {
           />
         ))}
       </div>
+
+      <CapturedMatches league={league} />
 
       <LiveCollector league={league} refreshToken={planTick} onWatch={onWatch} />
 

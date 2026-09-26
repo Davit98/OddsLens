@@ -30,6 +30,12 @@ export function Header() {
         </Link>
 
         <div className="flex items-center gap-3 text-sm">
+          <Link
+            href="/#captured-live"
+            className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-slate-300 transition hover:border-emerald-400/40 hover:text-white"
+          >
+            Captured
+          </Link>
           <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5">
             <span className="text-slate-400">Credits left </span>
             <span

@@ -6,6 +6,7 @@ import type {
   Credits,
   GoalEvent,
   HalfEnds,
+  CapturedLiveMatch,
   LiveCandidate,
   LiveFeedRow,
   LiveJob,
@@ -735,6 +736,52 @@ export function listLiveFeed(bookmaker: string, limit = 40): LiveFeedRow[] {
   }));
 }
 
+export function listCapturedLiveMatches(): CapturedLiveMatch[] {
+  const rows = getDb()
+    .prepare(
+      `WITH latest AS (
+         SELECT event_id, display_clock, elapsed_minute, home_score, away_score,
+                ROW_NUMBER() OVER (
+                  PARTITION BY event_id
+                  ORDER BY captured_at DESC, elapsed_minute DESC, id DESC
+                ) AS rn
+         FROM live_snapshots
+       )
+       SELECT m.id, m.sport_key, m.home_team, m.away_team, m.commence_time, m.completed,
+              COALESCE(latest.home_score, m.home_score) AS home_score,
+              COALESCE(latest.away_score, m.away_score) AS away_score,
+              COUNT(DISTINCT s.elapsed_minute) AS live_minutes,
+              MAX(s.captured_at) AS last_captured_at,
+              GROUP_CONCAT(DISTINCT s.bookmaker) AS bookmakers,
+              latest.display_clock,
+              latest.elapsed_minute,
+              EXISTS(SELECT 1 FROM live_targets t WHERE t.event_id = m.id) AS planned
+       FROM matches m
+       INNER JOIN live_snapshots s ON s.event_id = m.id
+       LEFT JOIN latest ON latest.event_id = m.id AND latest.rn = 1
+       GROUP BY m.id
+       ORDER BY last_captured_at DESC`,
+    )
+    .all() as DbCapturedLive[];
+
+  return rows.map((row) => ({
+    id: row.id,
+    sportKey: row.sport_key,
+    homeTeam: row.home_team,
+    awayTeam: row.away_team,
+    commenceTime: row.commence_time,
+    completed: Boolean(row.completed),
+    homeScore: row.home_score,
+    awayScore: row.away_score,
+    liveMinutes: row.live_minutes,
+    lastCapturedAt: row.last_captured_at,
+    displayClock: row.display_clock,
+    elapsedMinute: row.elapsed_minute,
+    bookmakers: row.bookmakers ? row.bookmakers.split(",").filter(Boolean) : [],
+    planned: Boolean(row.planned),
+  }));
+}
+
 export function getCachedBookmakers(eventId: string): string[] {
   const rows = getDb()
     .prepare(
@@ -1127,6 +1174,23 @@ type DbLiveCandidate = {
   live_minutes: number;
   elapsed_minute: number | null;
   display_clock: string | null;
+};
+
+type DbCapturedLive = {
+  id: string;
+  sport_key: string;
+  home_team: string;
+  away_team: string;
+  commence_time: string;
+  completed: number;
+  home_score: number | null;
+  away_score: number | null;
+  live_minutes: number;
+  last_captured_at: string;
+  bookmakers: string | null;
+  display_clock: string | null;
+  elapsed_minute: number | null;
+  planned: number;
 };
 
 type DbLiveFeed = {

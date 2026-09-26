@@ -46,6 +46,23 @@ export type LiveCandidate = {
   displayClock: string | null;
 };
 
+export type CapturedLiveMatch = {
+  id: string;
+  sportKey: string;
+  homeTeam: string;
+  awayTeam: string;
+  commenceTime: string;
+  completed: boolean;
+  homeScore: number | null;
+  awayScore: number | null;
+  liveMinutes: number;
+  lastCapturedAt: string;
+  displayClock: string | null;
+  elapsedMinute: number | null;
+  bookmakers: string[];
+  planned: boolean;
+};
+
 export type LiveFeedRow = {
   id: number;
   eventId: string;
