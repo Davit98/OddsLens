@@ -606,6 +606,21 @@ export function removeLiveTarget(eventId: string): void {
   getDb().prepare("DELETE FROM live_targets WHERE event_id = ?").run(eventId);
 }
 
+/** Uncheck matches that are full time, or that kicked off before the live window. */
+export function releaseFinishedLiveTargets(liveUntilIso: string): void {
+  getDb()
+    .prepare(
+      `DELETE FROM live_targets
+       WHERE event_id IN (
+         SELECT t.event_id
+         FROM live_targets t
+         INNER JOIN matches m ON m.id = t.event_id
+         WHERE m.completed = 1 OR m.commence_time <= ?
+       )`,
+    )
+    .run(liveUntilIso);
+}
+
 export function listLiveTargetMatches(): MatchRecord[] {
   const rows = getDb()
     .prepare(

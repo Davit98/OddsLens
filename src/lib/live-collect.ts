@@ -6,6 +6,8 @@ import {
   listLiveCandidates,
   listLiveFeed,
   listLiveTargetMatches,
+  releaseFinishedLiveTargets,
+  removeLiveTarget,
   startLiveJob,
   stopLiveJob,
   touchLiveJob,
@@ -305,7 +307,10 @@ async function collectEvent(
     ]);
   }
 
-  if (fixture?.phase === "ft") return false;
+  if (fixture?.phase === "ft") {
+    removeLiveTarget(event.id);
+    return false;
+  }
 
   const sample = minuteSample(fixture, event.commence_time);
   if (!sample) return false;
@@ -404,6 +409,7 @@ async function runTick(): Promise<void> {
   const usedBefore = getCredits().used ?? 0;
   let lastError: string | null = null;
   try {
+    releaseFinishedTargets();
     const planned = listLiveTargetMatches().filter(isDue);
     const sports = [...new Set(planned.map((match) => match.sportKey))];
     const pace = { last: 0 };
@@ -495,6 +501,10 @@ export function ensureLiveLoop(options?: { immediate?: boolean }): void {
   }, TICK_MS);
 }
 
+function releaseFinishedTargets(): void {
+  releaseFinishedLiveTargets(new Date(Date.now() - LIVE_WINDOW_MINUTES * 60_000).toISOString());
+}
+
 export function getLiveStatus(): {
   job: LiveJob | null;
   candidates: LiveCandidate[];
@@ -502,6 +512,7 @@ export function getLiveStatus(): {
   credits: Credits;
 } {
   ensureLiveLoop();
+  releaseFinishedTargets();
   const job = getLiveJob();
   const bookmaker = job?.bookmaker ?? DEFAULT_BOOKMAKER;
   const now = Date.now();
