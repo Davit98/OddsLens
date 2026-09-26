@@ -40,7 +40,7 @@ export function Header() {
             <span className="text-slate-400">Credits left </span>
             <span
               className={`font-mono font-semibold ${
-                remaining !== null && remaining < 500
+                remaining != null && remaining < 500
                   ? "text-amber-300"
                   : "text-emerald-300"
               }`}
