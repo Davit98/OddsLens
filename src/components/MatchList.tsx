@@ -95,10 +95,8 @@ export function MatchList() {
         notes.push(
           "Older fixtures loaded from cache. Final scores are backfilled from ESPN.",
         );
-      } else {
-        notes.push("Completed matches loaded from today's cache. Upcoming fixtures are free.");
       }
-      setScoresNote(notes.join(" "));
+      setScoresNote(notes.length > 0 ? notes.join(" ") : null);
       await new Promise<void>((resolve) => {
         const timer = window.setTimeout(resolve, 280);
         signal.addEventListener("abort", () => {
@@ -191,7 +189,9 @@ export function MatchList() {
             Snapshots are stored locally so a match is only billed once per bookmaker.
           </p>
         </div>
-        <p className="max-w-sm text-xs leading-5 text-slate-500">{scoresNote}</p>
+        {scoresNote ? (
+          <p className="max-w-sm text-xs leading-5 text-slate-500">{scoresNote}</p>
+        ) : null}
       </div>
 
       <div className="flex flex-wrap gap-2">
