@@ -10,6 +10,10 @@ import { HistoryLoadingCard } from "./HistoryLoadingCard";
 import { LiveCollector } from "./LiveCollector";
 import { useCredits } from "./CreditsProvider";
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 export function MatchList() {
   const { setCredits } = useCredits();
   const { league, setLeague, lookback, setLookback } = useBrowseFilters();
@@ -23,7 +27,11 @@ export function MatchList() {
   const [error, setError] = useState<string | null>(null);
   const [scoresNote, setScoresNote] = useState<string | null>(null);
 
-  const load = useCallback(async (nextLeague: LeagueFilter, nextLookback: LookbackKey) => {
+  const load = useCallback(async (
+    nextLeague: LeagueFilter,
+    nextLookback: LookbackKey,
+    signal: AbortSignal,
+  ) => {
     setLoading(true);
     setError(null);
     setProgress(8);
@@ -33,16 +41,19 @@ export function MatchList() {
       if (nextLookback !== "3") {
         const previewResponse = await fetch(
           `/api/matches?league=${nextLeague}&lookback=${nextLookback}&preview=1`,
+          { signal, cache: "no-store" },
         );
         const preview = (await previewResponse.json()) as {
           estimatedHistoryCredits?: number;
         };
+        if (signal.aborted) return;
         pending = preview.estimatedHistoryCredits ?? 0;
         setPendingDays(pending);
       }
 
       const response = await fetch(
         `/api/matches?league=${nextLeague}&lookback=${nextLookback}`,
+        { signal, cache: "no-store" },
       );
       const data = (await response.json()) as {
         matches?: MatchRecord[];
@@ -53,6 +64,7 @@ export function MatchList() {
         credits?: Credits;
         error?: string;
       };
+      if (signal.aborted) return;
       if (!response.ok) {
         throw new Error(data.error ?? "Failed to load matches");
       }
@@ -81,11 +93,18 @@ export function MatchList() {
         notes.push("Completed matches loaded from today's cache. Upcoming fixtures are free.");
       }
       setScoresNote(notes.join(" "));
-      await new Promise((resolve) => setTimeout(resolve, 280));
+      await new Promise<void>((resolve) => {
+        const timer = window.setTimeout(resolve, 280);
+        signal.addEventListener("abort", () => {
+          window.clearTimeout(timer);
+          resolve();
+        }, { once: true });
+      });
     } catch (err) {
+      if (signal.aborted || isAbortError(err)) return;
       setError(err instanceof Error ? err.message : "Failed to load matches");
     } finally {
-      setLoading(false);
+      if (!signal.aborted) setLoading(false);
     }
   }, [setCredits]);
 
@@ -118,7 +137,9 @@ export function MatchList() {
   }, []);
 
   useEffect(() => {
-    void load(league, lookback);
+    const controller = new AbortController();
+    void load(league, lookback, controller.signal);
+    return () => controller.abort();
   }, [league, lookback, load]);
 
   useEffect(() => {
@@ -138,6 +159,7 @@ export function MatchList() {
   const grouped = useMemo(() => {
     const byLeague = new Map<string, MatchRecord[]>();
     for (const match of matches) {
+      if (league !== "all" && match.sportKey !== league) continue;
       const list = byLeague.get(match.sportKey) ?? [];
       list.push(match);
       byLeague.set(match.sportKey, list);
@@ -158,7 +180,7 @@ export function MatchList() {
         return Date.parse(b.commenceTime) - Date.parse(a.commenceTime);
       }),
     }));
-  }, [matches]);
+  }, [league, matches]);
 
   return (
     <div className="space-y-6">
