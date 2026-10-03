@@ -1,6 +1,7 @@
 import {
   getGoals,
   getMatchEspn,
+  listIncompleteLiveGoals,
   listMatches,
   markEspnDay,
   replaceGoals,
@@ -17,7 +18,14 @@ import {
 import type { GoalEvent, HalfEnds, MatchRecord } from "./types";
 
 const ESPN_POOL = 6;
+const GOAL_REFRESH_MS = 60_000;
 const EMPTY_HALF_ENDS: HalfEnds = { h1EndMinute: null, h2EndMinute: null };
+const lastGoalFetchAt = new Map<string, number>();
+
+function finalScore(match: MatchRecord): number | null {
+  if (!match.completed || match.homeScore == null || match.awayScore == null) return null;
+  return match.homeScore + match.awayScore;
+}
 
 function detailsOf(eventId: string): { goals: GoalEvent[]; halfEnds: HalfEnds } {
   return {
@@ -99,15 +107,18 @@ export async function backfillEspnScores(sportKey: string): Promise<number> {
 export async function ensureMatchDetails(
   match: MatchRecord,
 ): Promise<{ goals: GoalEvent[]; halfEnds: HalfEnds }> {
-  const existing = getMatchEspn(match.id);
-  if (
-    existing?.goalsFetched &&
-    existing.halfEnds.h1EndMinute != null &&
-    existing.halfEnds.h2EndMinute != null
-  ) {
-    return detailsOf(match.id);
+  const stored = getGoals(match.id);
+  const total = finalScore(match);
+  if (total != null && stored.length >= total) return detailsOf(match.id);
+
+  const shortOfFinal = total != null && stored.length < total;
+  if (!shortOfFinal) {
+    const last = lastGoalFetchAt.get(match.id) ?? 0;
+    if (Date.now() - last < GOAL_REFRESH_MS) return detailsOf(match.id);
+    lastGoalFetchAt.set(match.id, Date.now());
   }
 
+  const existing = getMatchEspn(match.id);
   let espnEventId = existing?.espnEventId ?? null;
   let espnLeague = existing?.espnLeague ?? null;
 
@@ -151,12 +162,22 @@ export async function ensureMatchDetails(
 
   try {
     const details = await fetchEspnGoals(espnLeague, espnEventId, match);
-    replaceGoals(match.id, details.goals);
+    const keepStored = details.goals.length < stored.length;
+    if (!keepStored) replaceGoals(match.id, details.goals);
+    const goalCount = keepStored ? stored.length : details.goals.length;
+    const homeScore = details.homeScore ?? match.homeScore;
+    const awayScore = details.awayScore ?? match.awayScore;
+    const finished = details.completed || match.completed;
+    const goalsFetched =
+      finished &&
+      homeScore != null &&
+      awayScore != null &&
+      goalCount >= homeScore + awayScore;
     setMatchEspn({
       eventId: match.id,
       espnEventId,
       espnLeague,
-      goalsFetched: true,
+      goalsFetched,
       halfEnds: details.halfEnds,
     });
     if (details.homeScore !== null && details.awayScore !== null) {
@@ -179,4 +200,15 @@ export async function ensureMatchDetails(
   }
 
   return detailsOf(match.id);
+}
+
+export async function backfillIncompleteLiveGoals(): Promise<number> {
+  const matches = listIncompleteLiveGoals();
+  let updated = 0;
+  await mapPool(matches, ESPN_POOL, async (match) => {
+    const before = getGoals(match.id).length;
+    const details = await ensureMatchDetails(match);
+    if (details.goals.length > before) updated += 1;
+  });
+  return updated;
 }

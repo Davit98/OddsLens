@@ -357,11 +357,9 @@ export async function fetchEspnGoals(
   const homeScore = home?.score === undefined || home.score === "" ? null : Number(home.score);
   const awayScore = away?.score === undefined || away.score === "" ? null : Number(away.score);
 
-  const scoring = (payload.keyEvents ?? []).filter((event) => {
-    if (event.shootout) return false;
-    const kind = event.type?.type ?? event.type?.text?.toLowerCase();
-    return Boolean(event.scoringPlay) && (kind === "goal" || event.type?.id === "70");
-  });
+  const scoring = (payload.keyEvents ?? []).filter(
+    (event) => !event.shootout && Boolean(event.scoringPlay),
+  );
 
   scoring.sort((a, b) => Date.parse(a.wallclock ?? "") - Date.parse(b.wallclock ?? ""));
 
@@ -379,6 +377,7 @@ export async function fetchEspnGoals(
     const athletes = (event.participants ?? [])
       .map((item) => item.athlete?.displayName)
       .filter((name): name is string => Boolean(name));
+    const kind = (event.type?.type ?? event.type?.text ?? "").toLowerCase();
 
     goals.push({
       period,
@@ -390,8 +389,8 @@ export async function fetchEspnGoals(
       assist: athletes[1] ?? null,
       homeScore: runningHome,
       awayScore: runningAway,
-      ownGoal: Boolean(event.ownGoal) || event.type?.type === "own-goal",
-      penalty: Boolean(event.penaltyKick) || event.type?.type === "penalty-goal",
+      ownGoal: Boolean(event.ownGoal) || kind === "own-goal",
+      penalty: Boolean(event.penaltyKick) || kind.startsWith("penalty"),
     });
   }
 

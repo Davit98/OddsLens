@@ -905,6 +905,24 @@ export function setMatchEspn(input: {
     );
 }
 
+export function listIncompleteLiveGoals(): MatchRecord[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT ${MATCH_COLUMNS}
+       FROM matches m
+       WHERE m.completed = 1
+         AND m.home_score IS NOT NULL
+         AND m.away_score IS NOT NULL
+         AND (m.home_score + m.away_score) > (
+           SELECT COUNT(*) FROM goals g WHERE g.event_id = m.id
+         )
+         AND EXISTS (SELECT 1 FROM live_snapshots ls WHERE ls.event_id = m.id)
+       ORDER BY m.commence_time ASC`,
+    )
+    .all() as DbMatch[];
+  return rows.map(mapMatch);
+}
+
 export function getGoals(eventId: string): GoalEvent[] {
   const rows = getDb()
     .prepare(
