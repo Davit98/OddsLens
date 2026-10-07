@@ -46,6 +46,11 @@ export type LiveCandidate = {
   displayClock: string | null;
 };
 
+export type CaptureCoverage = {
+  partial: boolean;
+  missingLabel: string | null;
+};
+
 export type CapturedLiveMatch = {
   id: string;
   sportKey: string;
@@ -61,6 +66,8 @@ export type CapturedLiveMatch = {
   elapsedMinute: number | null;
   bookmakers: string[];
   planned: boolean;
+  partial: boolean;
+  missingLabel: string | null;
 };
 
 export type LiveFeedRow = {

@@ -15,7 +15,7 @@ import {
 } from "recharts";
 import { useCredits } from "./CreditsProvider";
 import { SnapshotFetchingBanner } from "./SnapshotFetching";
-import { downloadOddsWorkbook, type OddsSheet } from "@/lib/excel-odds";
+import { buildOddsWorkbookSheets, downloadOddsWorkbook } from "@/lib/excel-odds";
 import { formatKickoff, formatMinute, formatOdds, formatScore } from "@/lib/format";
 import {
   BOOKMAKERS,
@@ -37,6 +37,7 @@ import {
   type MarketKey,
 } from "@/lib/leagues";
 import type {
+  CaptureCoverage,
   CreditEstimate,
   Credits,
   GoalEvent,
@@ -66,6 +67,7 @@ type OddsResponse = {
   estimates?: Record<MarketKey, CreditEstimate>;
   goals?: GoalEvent[];
   halfEnds?: HalfEnds;
+  capture?: CaptureCoverage;
   credits?: Credits;
   result?: IngestResult;
   error?: string;
@@ -182,12 +184,6 @@ function settleTimes(
   return { halfGoals, settled };
 }
 
-const EXPORT_SHEETS: Array<{ market: MarketKey; name: string; liveOnly: boolean }> = [
-  { market: MARKETS.h1, name: "1st half chart", liveOnly: false },
-  { market: MARKETS.h2, name: "2nd half chart", liveOnly: false },
-  { market: MARKETS.full, name: "Match totals", liveOnly: true },
-];
-
 function buildChartSnapshots(
   series: SeriesPoint[],
   market: MarketKey,
@@ -225,20 +221,6 @@ function buildChartSnapshots(
     }));
 }
 
-function linesForMarket(series: SeriesPoint[], market: MarketKey): number[] {
-  const points = new Set<number>();
-  for (const row of series) {
-    if (row.market === market && row.point !== null) points.add(row.point);
-  }
-  return [...points].sort((a, b) => a - b);
-}
-
-function halfEndFor(market: MarketKey, halfEnds: HalfEnds): number | null {
-  if (market === MARKETS.h1) return halfEnds.h1EndMinute;
-  if (market === MARKETS.h2) return halfEnds.h2EndMinute;
-  return null;
-}
-
 function filePart(value: string): string {
   const cleaned = value
     .normalize("NFKD")
@@ -248,47 +230,18 @@ function filePart(value: string): string {
   return cleaned || "match";
 }
 
-function oddsSheet(
-  series: SeriesPoint[],
-  market: MarketKey,
-  source: OddsSource,
-  halfEnds: HalfEnds,
-  goals: GoalEvent[],
-  name: string,
-): OddsSheet | null {
-  const snapshots = buildChartSnapshots(series, market, source, halfEndFor(market, halfEnds));
-  if (snapshots.length === 0) return null;
-  const lines = linesForMarket(series, market);
-  const clocks = snapshots
-    .map((snapshot) => snapshot.liveClock)
-    .filter((clock): clock is LiveClock => clock != null);
-  const h1Added = source === "live" ? liveChartAxis(market, clocks).h1Added : 0;
-  const { settled } = settleTimes(goals, market, lines, (goal) => {
-    if (source !== "live") return goal.elapsedMinutes;
-    const clock = goalClock(goal);
-    if (!clock) return goal.elapsedMinutes;
-    return chartMinuteFor(clock, market, h1Added) ?? goal.elapsedMinutes;
-  });
-  return {
-    name,
-    rows: [
-      ["Minute", ...lines.map((line) => `Over ${line}`)],
-      ...snapshots.map((snapshot) => [
-        snapshot.clockLabel,
-        ...lines.map((line) => overAt(snapshot, line, settled)),
-      ]),
-    ],
-  };
-}
+const EMPTY_CAPTURE: CaptureCoverage = { partial: false, missingLabel: null };
 
 export function MatchExplorer({
   match,
   initialGoals = [],
   initialHalfEnds = { h1EndMinute: null, h2EndMinute: null },
+  initialCapture = EMPTY_CAPTURE,
 }: {
   match: MatchRecord;
   initialGoals?: GoalEvent[];
   initialHalfEnds?: HalfEnds;
+  initialCapture?: CaptureCoverage;
 }) {
   const { credits, setCredits } = useCredits();
   const [currentMatch, setCurrentMatch] = useState(match);
@@ -306,6 +259,7 @@ export function MatchExplorer({
   );
   const [goals, setGoals] = useState<GoalEvent[]>(initialGoals);
   const [halfEnds, setHalfEnds] = useState<HalfEnds>(initialHalfEnds);
+  const [capture, setCapture] = useState<CaptureCoverage>(initialCapture);
   const [loading, setLoading] = useState(true);
   const [fetching, setFetching] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -341,6 +295,7 @@ export function MatchExplorer({
       if (data.match) setCurrentMatch(data.match);
       if (data.goals) setGoals(data.goals);
       if (data.halfEnds) setHalfEnds(data.halfEnds);
+      if (data.capture) setCapture(data.capture);
       if (data.credits) setCredits(data.credits);
     },
     [setCredits],
@@ -399,7 +354,8 @@ export function MatchExplorer({
     setCurrentMatch(match);
     setGoals(initialGoals);
     setHalfEnds(initialHalfEnds);
-  }, [initialGoals, initialHalfEnds, match]);
+    setCapture(initialCapture);
+  }, [initialCapture, initialGoals, initialHalfEnds, match]);
 
   const availableLines = useMemo(() => {
     const points = new Set(
@@ -479,12 +435,7 @@ export function MatchExplorer({
   );
 
   const exportSheets = useMemo(
-    () =>
-      EXPORT_SHEETS.flatMap((sheet) => {
-        if (sheet.liveOnly && source !== "live") return [];
-        const built = oddsSheet(series, sheet.market, source, halfEnds, goals, sheet.name);
-        return built ? [built] : [];
-      }),
+    () => buildOddsWorkbookSheets({ series, source, halfEnds, goals }),
     [goals, halfEnds, series, source],
   );
 
@@ -570,9 +521,16 @@ export function MatchExplorer({
           {currentMatch.homeTeam}{" "}
           <span className="text-slate-500">vs</span> {currentMatch.awayTeam}
         </h1>
-        <p className="mt-1 text-sm text-slate-400">
-          Kickoff {formatKickoff(currentMatch.commenceTime)}
-          {ftScore ? ` · FT ${ftScore}` : ""}
+        <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-slate-400">
+          <span>
+            Kickoff {formatKickoff(currentMatch.commenceTime)}
+            {ftScore ? ` · FT ${ftScore}` : ""}
+          </span>
+          {capture.partial ? (
+            <span className="rounded-full bg-amber-400/15 px-2 py-0.5 text-[11px] font-medium text-amber-200">
+              Partial{capture.missingLabel ? ` · ${capture.missingLabel}` : ""}
+            </span>
+          ) : null}
         </p>
         {goals.length > 0 ? (
           <div className="mt-3 flex flex-wrap gap-2">

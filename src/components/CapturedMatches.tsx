@@ -33,6 +33,9 @@ export function CapturedMatches({ league = "all" }: { league?: LeagueFilter }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(true);
+  const [excludePartial, setExcludePartial] = useState(true);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (window.location.hash === "#captured-live") setOpen(true);
@@ -86,9 +89,42 @@ export function CapturedMatches({ league = "all" }: { league?: LeagueFilter }) {
     });
   }, [league, matches]);
 
+  const exportMatches = useMemo(
+    () => visible.filter((match) => !excludePartial || !match.partial),
+    [excludePartial, visible],
+  );
+
   const countLabel = loading
     ? "Loading"
     : `${visible.length} match${visible.length === 1 ? "" : "es"}`;
+
+  async function handleDownloadAll() {
+    if (downloading || exportMatches.length === 0) return;
+    setDownloading(true);
+    setDownloadError(null);
+    try {
+      const params = new URLSearchParams({
+        excludePartial: excludePartial ? "1" : "0",
+        league,
+      });
+      const response = await fetch(`/api/live/export?${params}`);
+      if (!response.ok) {
+        const data = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(data?.error ?? "Could not download matches");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "oddslens-captured.zip";
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setDownloadError(err instanceof Error ? err.message : "Could not download matches");
+    } finally {
+      setDownloading(false);
+    }
+  }
 
   return (
     <section id="captured-live" className="scroll-mt-20 rounded-2xl border border-white/10 bg-white/5 p-4">
@@ -136,7 +172,28 @@ export function CapturedMatches({ league = "all" }: { league?: LeagueFilter }) {
             Every match with minute-by-minute odds already saved. Open one to see the charts.
           </p>
 
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => void handleDownloadAll()}
+              disabled={downloading || loading || exportMatches.length === 0}
+              className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1.5 text-sm font-medium text-emerald-200 hover:bg-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {downloading ? "Preparing…" : `Download all (${exportMatches.length})`}
+            </button>
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={excludePartial}
+                onChange={(event) => setExcludePartial(event.target.checked)}
+                className="accent-emerald-400"
+              />
+              Exclude partial
+            </label>
+          </div>
+
           {error ? <p className="mt-3 text-sm text-rose-200">{error}</p> : null}
+          {downloadError ? <p className="mt-3 text-sm text-rose-200">{downloadError}</p> : null}
 
           {loading ? (
             <div className="mt-4 grid gap-3 md:grid-cols-2">
@@ -197,11 +254,24 @@ function CapturedCard({ match }: { match: CapturedLiveMatch }) {
           >
             {status === "live" ? "Live" : status === "upcoming" ? "Upcoming" : "FT"}
           </span>
+          {match.partial ? (
+            <span className="mt-1 inline-block rounded-full bg-amber-400/15 px-2 py-0.5 text-[11px] font-medium text-amber-200">
+              Partial
+            </span>
+          ) : null}
           {score ? (
             <p className="mt-2 font-mono text-lg text-white">{score}</p>
           ) : null}
         </div>
       </div>
+
+      {match.partial && match.missingLabel ? (
+        <p className="mt-2 text-xs text-amber-200/90">
+          {match.missingLabel.endsWith("missing")
+            ? match.missingLabel
+            : `Missing ${match.missingLabel}`}
+        </p>
+      ) : null}
 
       <div className="mt-4 flex items-center justify-between gap-3 text-xs text-slate-500">
         <span className="min-w-0 truncate">

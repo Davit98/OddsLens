@@ -1,11 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { clockFromLegacyRow, liveClockFromKey, liveMinuteKey } from "./leagues";
+import { captureCoverage, type CaptureMinute } from "./capture-coverage";
+import { MARKETS, clockFromLegacyRow, liveClockFromKey, liveMinuteKey } from "./leagues";
 import type {
   Credits,
   GoalEvent,
   HalfEnds,
+  CaptureCoverage,
   CapturedLiveMatch,
   LiveCandidate,
   LiveFeedRow,
@@ -764,22 +766,76 @@ export function listCapturedLiveMatches(): CapturedLiveMatch[] {
     )
     .all() as DbCapturedLive[];
 
-  return rows.map((row) => ({
-    id: row.id,
-    sportKey: row.sport_key,
-    homeTeam: row.home_team,
-    awayTeam: row.away_team,
-    commenceTime: row.commence_time,
-    completed: Boolean(row.completed),
-    homeScore: row.home_score,
-    awayScore: row.away_score,
-    liveMinutes: row.live_minutes,
-    lastCapturedAt: row.last_captured_at,
-    displayClock: row.display_clock,
-    elapsedMinute: row.elapsed_minute,
-    bookmakers: row.bookmakers ? row.bookmakers.split(",").filter(Boolean) : [],
-    planned: Boolean(row.planned),
-  }));
+  const coverage = captureCoverageByEvent(
+    rows.map((row) => ({ id: row.id, completed: Boolean(row.completed) })),
+  );
+
+  return rows.map((row) => {
+    const matchCoverage = coverage.get(row.id) ?? { partial: false, missingLabel: null };
+    return {
+      id: row.id,
+      sportKey: row.sport_key,
+      homeTeam: row.home_team,
+      awayTeam: row.away_team,
+      commenceTime: row.commence_time,
+      completed: Boolean(row.completed),
+      homeScore: row.home_score,
+      awayScore: row.away_score,
+      liveMinutes: row.live_minutes,
+      lastCapturedAt: row.last_captured_at,
+      displayClock: row.display_clock,
+      elapsedMinute: row.elapsed_minute,
+      bookmakers: row.bookmakers ? row.bookmakers.split(",").filter(Boolean) : [],
+      planned: Boolean(row.planned),
+      partial: matchCoverage.partial,
+      missingLabel: matchCoverage.missingLabel,
+    };
+  });
+}
+
+export function getCaptureCoverage(eventId: string, completed: boolean): CaptureCoverage {
+  const rows = getDb()
+    .prepare(
+      `SELECT market, elapsed_minute
+       FROM live_snapshots
+       WHERE event_id = ? AND market IN (?, ?)
+       GROUP BY market, elapsed_minute`,
+    )
+    .all(eventId, MARKETS.h1, MARKETS.full) as { market: string; elapsed_minute: number }[];
+  return captureCoverage(
+    rows.map((row) => ({ market: row.market, elapsedMinute: row.elapsed_minute })),
+    completed,
+  );
+}
+
+function captureCoverageByEvent(
+  matches: Array<{ id: string; completed: boolean }>,
+): Map<string, CaptureCoverage> {
+  const completedById = new Map(matches.map((match) => [match.id, match.completed]));
+  const rows = getDb()
+    .prepare(
+      `SELECT event_id, market, elapsed_minute
+       FROM live_snapshots
+       WHERE market IN (?, ?)
+       GROUP BY event_id, market, elapsed_minute`,
+    )
+    .all(MARKETS.h1, MARKETS.full) as {
+    event_id: string;
+    market: string;
+    elapsed_minute: number;
+  }[];
+  const minutes = new Map<string, CaptureMinute[]>();
+  for (const row of rows) {
+    if (!completedById.has(row.event_id)) continue;
+    const list = minutes.get(row.event_id) ?? [];
+    list.push({ market: row.market, elapsedMinute: row.elapsed_minute });
+    minutes.set(row.event_id, list);
+  }
+  const coverage = new Map<string, CaptureCoverage>();
+  for (const match of matches) {
+    coverage.set(match.id, captureCoverage(minutes.get(match.id) ?? [], match.completed));
+  }
+  return coverage;
 }
 
 export function getCachedBookmakers(eventId: string): string[] {

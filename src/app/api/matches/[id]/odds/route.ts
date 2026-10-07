@@ -1,5 +1,12 @@
 import { NextResponse } from "next/server";
-import { getCredits, getLiveOddsSeries, getMatch, getMatchEspn, getOddsSeries } from "@/lib/db";
+import {
+  getCaptureCoverage,
+  getCredits,
+  getLiveOddsSeries,
+  getMatch,
+  getMatchEspn,
+  getOddsSeries,
+} from "@/lib/db";
 import { estimateCredits, ingestMatchOdds } from "@/lib/ingest";
 import { DEFAULT_BOOKMAKER, MARKETS, type MarketKey } from "@/lib/leagues";
 import { ensureMatchDetails } from "@/lib/match-details";
@@ -104,6 +111,7 @@ export async function GET(
     estimates: marketEstimates(id, bookmaker, halfEnds),
     goals,
     halfEnds,
+    capture: getCaptureCoverage(id, fresh.completed),
     credits: getCredits(),
   });
 }
@@ -137,10 +145,11 @@ export async function POST(
     });
     const halfEnds = getMatchEspn(id)?.halfEnds ?? details.halfEnds;
     const goals = details.goals;
+    const fresh = getMatch(id) ?? match;
     return NextResponse.json({
       result,
       series: seriesFor(id, bookmaker, match.commenceTime),
-      match: getMatch(id),
+      match: fresh,
       estimate: estimateCredits({
         eventId: id,
         bookmaker,
@@ -150,6 +159,7 @@ export async function POST(
       estimates: marketEstimates(id, bookmaker, halfEnds),
       goals,
       halfEnds,
+      capture: getCaptureCoverage(id, fresh.completed),
     });
   } catch (error) {
     if (error instanceof OddsApiError) {
