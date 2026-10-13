@@ -707,17 +707,30 @@ export function listLiveFeed(bookmaker: string, limit = 40): LiveFeedRow[] {
   const ids = snapshots.map((row) => row.id);
   const odds = db
     .prepare(
-      `SELECT snapshot_id, point, over_price
+      `SELECT snapshot_id, point, over_price, under_price
        FROM live_odds
        WHERE snapshot_id IN (${ids.map(() => "?").join(",")})
        ORDER BY point ASC`,
     )
-    .all(...ids) as Array<{ snapshot_id: number; point: number; over_price: number | null }>;
+    .all(...ids) as Array<{
+    snapshot_id: number;
+    point: number;
+    over_price: number | null;
+    under_price: number | null;
+  }>;
 
-  const linesBySnapshot = new Map<number, Array<{ point: number; overPrice: number | null }>>();
+  const linesBySnapshot = new Map<
+    number,
+    Array<{ point: number; overPrice: number | null; underPrice: number | null }>
+  >();
   for (const row of odds) {
+    if (row.over_price === null && row.under_price === null) continue;
     const list = linesBySnapshot.get(row.snapshot_id) ?? [];
-    if (row.over_price !== null) list.push({ point: row.point, overPrice: row.over_price });
+    list.push({
+      point: row.point,
+      overPrice: row.over_price,
+      underPrice: row.under_price,
+    });
     linesBySnapshot.set(row.snapshot_id, list);
   }
 

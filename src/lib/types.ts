@@ -83,7 +83,7 @@ export type LiveFeedRow = {
   available: boolean;
   homeScore: number | null;
   awayScore: number | null;
-  lines: Array<{ point: number; overPrice: number | null }>;
+  lines: Array<{ point: number; overPrice: number | null; underPrice: number | null }>;
 };
 
 export type OddsPoint = {

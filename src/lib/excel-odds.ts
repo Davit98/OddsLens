@@ -126,14 +126,25 @@ function oddsSheet(
     return goalChartMinute(goal, market, source, h1Added) ?? goal.elapsedMinutes;
   });
   const labels = goalLabelsByMinute(goals, market, source, h1Added);
+  const live = source === "live";
   return {
     name,
     rows: [
-      ["Minute", "Goal", ...lines.map((line) => `Over ${line}`)],
+      [
+        "Minute",
+        "Goal",
+        ...lines.flatMap((line) =>
+          live ? [`Over ${line}`, `Under ${line}`] : [`Over ${line}`],
+        ),
+      ],
       ...snapshots.map((snapshot) => [
         snapshot.clockLabel,
         labels.get(minuteKey(snapshot.chartMinute, source)) ?? null,
-        ...lines.map((line) => overAt(snapshot, line, settled)),
+        ...lines.flatMap((line) =>
+          live
+            ? [overAt(snapshot, line, settled), underAt(snapshot, line, settled)]
+            : [overAt(snapshot, line, settled)],
+        ),
       ]),
     ],
   };
@@ -315,14 +326,31 @@ function marketSnapshots(series: OddsSeriesPoint[], market: MarketKey): MarketSn
   return [...byTimestamp.values()].sort((a, b) => a.chartMinute - b.chartMinute);
 }
 
+function priceAt(
+  snapshot: MarketSnapshot,
+  line: number,
+  settled: Map<number, number>,
+  side: keyof LinePrices,
+): number | null {
+  const settledAt = settled.get(line);
+  if (settledAt !== undefined && snapshot.chartMinute > settledAt) return null;
+  return snapshot.prices.get(line)?.[side] ?? null;
+}
+
 function overAt(
   snapshot: MarketSnapshot,
   line: number,
   settled: Map<number, number>,
 ): number | null {
-  const settledAt = settled.get(line);
-  if (settledAt !== undefined && snapshot.chartMinute > settledAt) return null;
-  return snapshot.prices.get(line)?.overPrice ?? null;
+  return priceAt(snapshot, line, settled, "overPrice");
+}
+
+function underAt(
+  snapshot: MarketSnapshot,
+  line: number,
+  settled: Map<number, number>,
+): number | null {
+  return priceAt(snapshot, line, settled, "underPrice");
 }
 
 function linesForMarket(series: OddsSeriesPoint[], market: MarketKey): number[] {

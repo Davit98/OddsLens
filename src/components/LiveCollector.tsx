@@ -30,7 +30,12 @@ function marketLabel(market: string): string {
 
 function lineSummary(row: LiveFeedRow): string {
   if (!row.available || row.lines.length === 0) return "suspended";
-  const shown = row.lines.slice(0, 4).map((line) => `${line.point} ${line.overPrice?.toFixed(2) ?? "—"}`);
+  const shown = row.lines
+    .slice(0, 4)
+    .map(
+      (line) =>
+        `${line.point} ${line.overPrice?.toFixed(2) ?? "—"} / ${line.underPrice?.toFixed(2) ?? "—"}`,
+    );
   const extra = row.lines.length > 4 ? ` +${row.lines.length - 4}` : "";
   return `${shown.join(" · ")}${extra}`;
 }
@@ -333,7 +338,7 @@ export function LiveCollector({
                   <th className="px-3 py-2 font-medium">Match</th>
                   <th className="px-3 py-2 font-medium">Minute</th>
                   <th className="px-3 py-2 font-medium">Market</th>
-                  <th className="px-3 py-2 font-medium">Over lines</th>
+                  <th className="px-3 py-2 font-medium">Over / Under</th>
                 </tr>
               </thead>
               <tbody>

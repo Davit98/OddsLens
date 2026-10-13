@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   CartesianGrid,
@@ -143,14 +143,31 @@ function marketSnapshots(series: SeriesPoint[], market: MarketKey): MarketSnapsh
   return [...byTimestamp.values()].sort((a, b) => a.chartMinute - b.chartMinute);
 }
 
+function priceAt(
+  snapshot: MarketSnapshot,
+  line: number,
+  settled: Map<number, number>,
+  side: keyof LinePrices,
+): number | null {
+  const settledAt = settled.get(line);
+  if (settledAt !== undefined && snapshot.chartMinute > settledAt) return null;
+  return snapshot.prices.get(line)?.[side] ?? null;
+}
+
 function overAt(
   snapshot: MarketSnapshot,
   line: number,
   settled: Map<number, number>,
 ): number | null {
-  const settledAt = settled.get(line);
-  if (settledAt !== undefined && snapshot.chartMinute > settledAt) return null;
-  return snapshot.prices.get(line)?.overPrice ?? null;
+  return priceAt(snapshot, line, settled, "overPrice");
+}
+
+function underAt(
+  snapshot: MarketSnapshot,
+  line: number,
+  settled: Map<number, number>,
+): number | null {
+  return priceAt(snapshot, line, settled, "underPrice");
 }
 
 function goalClock(goal: GoalEvent): LiveClock | null {
@@ -253,6 +270,8 @@ export function MatchExplorer({
     match.liveMinutes > 0 ? "live" : "historical",
   );
   const [selectedLines, setSelectedLines] = useState<number[]>(DEFAULT_LINES);
+  const [showOver, setShowOver] = useState(true);
+  const [showUnder, setShowUnder] = useState(true);
   const [series, setSeries] = useState<SeriesPoint[]>([]);
   const [estimates, setEstimates] = useState<Record<MarketKey, CreditEstimate> | null>(
     null,
@@ -429,6 +448,17 @@ export function MatchExplorer({
     return `${minutes.length} snapshots per half, every 5 minutes from ${start}' to ${last}'`;
   }, [liveAxis, source, viewMarket, viewedHalfEnd]);
 
+  const plotOver = source !== "live" || showOver;
+  const plotUnder = source === "live" && showUnder;
+  const oddsTitle =
+    plotOver && plotUnder
+      ? "Over / Under odds"
+      : plotUnder
+        ? "Under odds"
+        : plotOver
+          ? "Over odds"
+          : "Over / Under odds";
+
   const snapshots = useMemo(
     () => buildChartSnapshots(series, viewMarket, source, viewedHalfEnd),
     [series, source, viewMarket, viewedHalfEnd],
@@ -446,11 +476,12 @@ export function MatchExplorer({
           minute: Math.round(snapshot.chartMinute * 10) / 10,
         };
         for (const line of selectedLines) {
-          row[`O${line}`] = overAt(snapshot, line, settled);
+          if (plotOver) row[`O${line}`] = overAt(snapshot, line, settled);
+          if (plotUnder) row[`U${line}`] = underAt(snapshot, line, settled);
         }
         return row;
       }),
-    [selectedLines, settled, snapshots],
+    [plotOver, plotUnder, selectedLines, settled, snapshots],
   );
 
   async function handleDownload() {
@@ -773,7 +804,33 @@ export function MatchExplorer({
       </div>
 
       {availableLines.length > 0 ? (
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {source === "live" ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setShowOver((current) => !current)}
+                className={`rounded-full px-3 py-1 text-xs font-medium ${
+                  showOver
+                    ? "bg-emerald-400/20 text-emerald-200 ring-1 ring-emerald-400/40"
+                    : "border border-white/10 text-slate-400"
+                }`}
+              >
+                Over
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowUnder((current) => !current)}
+                className={`rounded-full px-3 py-1 text-xs font-medium ${
+                  showUnder
+                    ? "bg-sky-400/20 text-sky-200 ring-1 ring-sky-400/40"
+                    : "border border-white/10 text-slate-400"
+                }`}
+              >
+                Under
+              </button>
+            </>
+          ) : null}
           {availableLines.map((line) => {
             const active = selectedLines.includes(line);
             return (
@@ -793,7 +850,7 @@ export function MatchExplorer({
                     : "border border-white/10 text-slate-400"
                 }`}
               >
-                Over {line}
+                {source === "live" ? line : `Over ${line}`}
               </button>
             );
           })}
@@ -803,7 +860,7 @@ export function MatchExplorer({
       <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h2 className="text-sm font-semibold text-white">
-            Over odds ·{" "}
+            {oddsTitle} ·{" "}
             {viewMarket === MARKETS.h1
               ? "1st half"
               : viewMarket === MARKETS.h2
@@ -826,9 +883,13 @@ export function MatchExplorer({
               ? `This bookmaker has no ${marketPhrase(viewMarket)} in the historical cache.`
               : `No historical ${marketPhrase(viewMarket)} for this bookmaker. Fetch snapshots to populate the chart.`}
           </div>
-        ) : selectedLines.length === 0 ? (
+        ) : selectedLines.length === 0 || (!plotOver && !plotUnder) ? (
           <div className="py-16 text-center text-slate-400">
-            Select at least one Over line to plot.
+            {selectedLines.length === 0
+              ? source === "live"
+                ? "Select at least one line to plot."
+                : "Select at least one Over line to plot."
+              : "Turn on Over or Under to plot."}
           </div>
         ) : (
           <div className="h-[360px]">
@@ -891,39 +952,57 @@ export function MatchExplorer({
                     />
                   );
                 })}
-                {selectedLines.map((line, index) => (
-                  <Line
-                    key={line}
-                    type="monotone"
-                    dataKey={`O${line}`}
-                    name={`Over ${line}`}
-                    stroke={LINE_COLORS[index % LINE_COLORS.length]}
-                    dot
-                    connectNulls={false}
-                    strokeWidth={2}
-                  />
-                ))}
+                {plotOver
+                  ? selectedLines.map((line, index) => (
+                      <Line
+                        key={`O${line}`}
+                        type="monotone"
+                        dataKey={`O${line}`}
+                        name={`Over ${line}`}
+                        stroke={LINE_COLORS[index % LINE_COLORS.length]}
+                        dot
+                        connectNulls={false}
+                        strokeWidth={2}
+                      />
+                    ))
+                  : null}
+                {plotUnder
+                  ? selectedLines.map((line, index) => (
+                      <Line
+                        key={`U${line}`}
+                        type="monotone"
+                        dataKey={`U${line}`}
+                        name={`Under ${line}`}
+                        stroke={LINE_COLORS[index % LINE_COLORS.length]}
+                        strokeDasharray="6 4"
+                        dot={false}
+                        connectNulls={false}
+                        strokeWidth={2}
+                      />
+                    ))
+                  : null}
               </LineChart>
             </ResponsiveContainer>
           </div>
         )}
-        {settled.size > 0 && chartRows.length > 0 ? (
+        {settled.size > 0 && chartRows.length > 0 && (plotOver || plotUnder) ? (
           <p className="mt-3 text-xs text-slate-500">
             After a line is settled, or the book stops offering it, the price shows as —.
           </p>
         ) : null}
       </div>
 
-      {snapshots.length > 0 && selectedLines.length > 0 ? (
+      {snapshots.length > 0 && selectedLines.length > 0 && (plotOver || plotUnder) ? (
         <div className="overflow-x-auto rounded-2xl border border-white/10">
           <table className="min-w-full text-left text-sm">
             <thead className="bg-white/5 text-xs uppercase tracking-wider text-slate-400">
               <tr>
                 <th className="px-3 py-2 font-medium">Minute</th>
                 {selectedLines.map((line) => (
-                  <th key={line} className="px-3 py-2 font-medium">
-                    Over {line}
-                  </th>
+                  <Fragment key={line}>
+                    {plotOver ? <th className="px-3 py-2 font-medium">Over {line}</th> : null}
+                    {plotUnder ? <th className="px-3 py-2 font-medium">Under {line}</th> : null}
+                  </Fragment>
                 ))}
               </tr>
             </thead>
@@ -939,16 +1018,29 @@ export function MatchExplorer({
                 >
                   <td className="px-3 py-1.5">{snapshot.clockLabel}</td>
                   {selectedLines.map((line) => {
-                    const price = overAt(snapshot, line, settled);
+                    const over = plotOver ? overAt(snapshot, line, settled) : null;
+                    const under = plotUnder ? underAt(snapshot, line, settled) : null;
                     return (
-                      <td
-                        key={line}
-                        className={`px-3 py-1.5 ${
-                          price == null ? "text-slate-500" : "text-emerald-300"
-                        }`}
-                      >
-                        {formatOdds(price)}
-                      </td>
+                      <Fragment key={line}>
+                        {plotOver ? (
+                          <td
+                            className={`px-3 py-1.5 ${
+                              over == null ? "text-slate-500" : "text-emerald-300"
+                            }`}
+                          >
+                            {formatOdds(over)}
+                          </td>
+                        ) : null}
+                        {plotUnder ? (
+                          <td
+                            className={`px-3 py-1.5 ${
+                              under == null ? "text-slate-500" : "text-sky-300"
+                            }`}
+                          >
+                            {formatOdds(under)}
+                          </td>
+                        ) : null}
+                      </Fragment>
                     );
                   })}
                 </tr>
