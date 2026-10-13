@@ -763,8 +763,12 @@ export function listCapturedLiveMatches(): CapturedLiveMatch[] {
          FROM live_snapshots
        )
        SELECT m.id, m.sport_key, m.home_team, m.away_team, m.commence_time, m.completed,
-              COALESCE(latest.home_score, m.home_score) AS home_score,
-              COALESCE(latest.away_score, m.away_score) AS away_score,
+              CASE WHEN m.completed = 1 THEN COALESCE(m.home_score, latest.home_score)
+                   ELSE COALESCE(latest.home_score, m.home_score)
+              END AS home_score,
+              CASE WHEN m.completed = 1 THEN COALESCE(m.away_score, latest.away_score)
+                   ELSE COALESCE(latest.away_score, m.away_score)
+              END AS away_score,
               COUNT(DISTINCT s.elapsed_minute) AS live_minutes,
               MAX(s.captured_at) AS last_captured_at,
               GROUP_CONCAT(DISTINCT s.bookmaker) AS bookmakers,
